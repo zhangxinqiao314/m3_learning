@@ -1,6 +1,7 @@
 import glob as glob
 import cv2
-from m3_learning.util.file_IO import make_folder
+from util.file_IO import make_folder
+import time
 
 
 def make_movie(movie_name, input_folder, output_folder, file_format,
