@@ -1,4 +1,4 @@
-from m3_learning.viz.layout import layout_fig, imagemap, labelfigs, add_scalebar, find_nearest
+from viz.layout import layout_fig, imagemap, labelfigs, add_scalebar, find_nearest
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -35,10 +35,10 @@ def embeddings(embedding, mod=4,
     fig, axs = layout_fig(len(channels), mod, **kwargs)
 
     # loops around the channels to plot
-    for i in channels:
+    for i,c in enumerate(channels):
         # plots the imagemap and formats
-        imagemap(axs[i], embedding[:, i].reshape(
-            shape_[0], shape_[1]), divider_=False, **kwargs)
+        imagemap(axs[i], embedding[:, c].reshape(
+            shape_[-4], shape_[-3]), divider_=False, **kwargs)
 
     # adds labels to the figure
     if labelfigs_:

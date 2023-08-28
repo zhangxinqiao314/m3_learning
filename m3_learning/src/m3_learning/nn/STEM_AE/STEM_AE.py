@@ -9,7 +9,18 @@ from util.file_IO import make_folder
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
+import h5py
+import warnings 
+warnings.filterwarnings("ignore")
+from viz.layout import find_nearest
+import time
+from datetime import date
 
+
+
+import sys
+import os
+# sys.path.append(os.path.abspath("./../STEM_AE")) # or whatever the name of the immediate parent folder is
 
 class ConvAutoencoder():
     """builds the convolutional autoencoder
@@ -23,7 +34,10 @@ class ConvAutoencoder():
                  embedding_size,
                  conv_size,
                  device,
+                 checkpoint = None,
                  learning_rate=3e-5,
+                 emb_h5_path = './Combined_all_samples/embeddings.h5',
+                 gen_h5_path = './Combined_all_samples/generated.h5'
                  ):
         """Initialization function
 
@@ -46,19 +60,34 @@ class ConvAutoencoder():
         self.device = device
         self.learning_rate = learning_rate
 
+        self.checkpoint = checkpoint
+
+        self.emb_h5_path = emb_h5_path
+        self.gen_h5_path = gen_h5_path
+
         # complies the network
         self.compile_model()
 
+    def open_embedding_h(self):
+        return h5py.File(self.emb_h5_path)
+        # check = checkpoint.split('/')[-1][:-4]
+        # return h[check]
+    
+    def open_generated_h(self):
+        return h5py.File(self.gen_h5_path)
+        # check = checkpoint.split('/')[-1][:-4]
+        # return h[check]
+    
     def compile_model(self):
         """function that complies the neural network model
         """
-
         # builds the encoder
         self.encoder = Encoder(
             original_step_size=self.encoder_step_size,
             pooling_list=self.pooling_list,
             embedding_size=self.embedding_size,
             conv_size=self.conv_size,
+            device=self.device
         ).to(self.device)
 
         # builds the decoder
@@ -72,7 +101,8 @@ class ConvAutoencoder():
 
         # builds the autoencoder
         self.autoencoder = AutoEncoder(
-            self.encoder, self.decoder).to(self.device)
+            self.encoder, self.decoder, self.embedding_size,
+            device=self.device).to(self.device)
 
         # sets the optimizers
         self.optimizer = optim.Adam(
@@ -82,6 +112,7 @@ class ConvAutoencoder():
         # sets the datatype of the model to float32
         self.autoencoder.type(torch.float32)
 
+    ## TODO: implement embedding calculation/unshuffler
     def Train(self,
               data,
               max_learning_rate=1e-4,
@@ -95,7 +126,8 @@ class ConvAutoencoder():
               epoch_=None,
               folder_path='./',
               batch_size=32,
-              best_train_loss=None):
+              best_train_loss=None,
+              save_emb_every=10):
         """function that trains the model
 
         Args:
@@ -112,8 +144,10 @@ class ConvAutoencoder():
             folder_path (str, optional): path where to save the weights. Defaults to './'.
             batch_size (int, optional): sets the batch size for training. Defaults to 32.
             best_train_loss (float, optional): current loss value to determine if you should save the value. Defaults to None.
+            save_emb_every (int, optional): 
         """
-
+        today = date.today()
+        save_date=today.strftime('(%Y-%m-%d)')
         make_folder(folder_path)
 
         # set seed
@@ -121,7 +155,7 @@ class ConvAutoencoder():
 
         # builds the dataloader
         self.DataLoader_ = DataLoader(
-            data.reshape(-1, 256, 256), batch_size=batch_size, shuffle=True)
+            data, batch_size=batch_size, shuffle=True)
 
         # option to use the learning rate scheduler
         if with_scheduler:
@@ -145,9 +179,16 @@ class ConvAutoencoder():
 
         # training loop
         for epoch in range(self.start_epoch, N_EPOCHS):
+            fill_embeddings = False
+            if epoch % save_emb_every ==0: # tell loss function to give embedding
+                print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
+                print('.............................')
+                fill_embeddings = self.get_embedding(data, 'temp.pkl', train=True)
+
 
             train = self.loss_function(
-                self.DataLoader_, coef_1, coef_2, coef_3, ln_parm)
+                self.DataLoader_, coef_1, coef_2, coef_3, ln_parm,
+                fill_embeddings=fill_embeddings)
             train_loss = train
             train_loss /= len(self.DataLoader_)
             print(
@@ -166,21 +207,39 @@ class ConvAutoencoder():
                 }
                 if epoch >= 0:
                     lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
-                    file_path = folder_path + '/Weight_' +\
+                    file_path = folder_path + f'/{save_date}_' +\
                         f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
                         f'_trainloss:{train_loss:.4f}.pkl'
                     torch.save(checkpoint, file_path)
 
-            if scheduler is not None:
-                scheduler.step()
+        if epoch%save_emb_every==0:
+            h = self.embedding.file
+            check = file_path.split('/')[-1][:-4]
+            h[f'embedding_{check}'] = h[f'embedding_temp']
+            h[f'scaleshear_{check}'] = h[f'scaleshear_temp']
+            h[f'rotation_{check}'] = h[f'rotation_temp'] 
+            h[f'translation_{check}'] = h[f'translation_temp']
+            self.embedding = h[f'embedding_{check}']
+            self.scale_shear = h[f'scaleshear_{check}']           
+            self.rotation = h[f'rotation_{check}']         
+            self.translation = h[f'translation_{check}']
+            del h[f'embedding_temp']         
+            del h[f'scaleshear_temp']          
+            del h[f'rotation_temp']          
+            del h[f'translation_temp']
+                        
+        if scheduler is not None:
+            scheduler.step()
 
+    ## TODO: why unshuffler taking so long? (just use h100 instead of titan)
     def loss_function(self,
                       train_iterator,
                       coef=0,
                       coef1=0,
                       coef2=0,
                       ln_parm=1,
-                      beta=None):
+                      beta=None,
+                      fill_embeddings=False):
         """computes the loss function for the training
 
         Args:
@@ -194,50 +253,80 @@ class ConvAutoencoder():
         Returns:
             _type_: _description_
         """
-
         # set the train mode
         self.autoencoder.train()
 
         # loss of the epoch
         train_loss = 0
         con_l = ContrastiveLoss(coef1).to(self.device)
-
-        for x in tqdm(train_iterator, leave=True, total=len(train_iterator)):
+        
+        for idx,x in tqdm(train_iterator, leave=True, total=len(train_iterator)):
+            # tic = time.time()
+            sorted, indices = torch.sort(idx)
+            sorted = sorted.detach().numpy()
 
             x = x.to(self.device, dtype=torch.float)
-
             maxi_ = DivergenceLoss(x.shape[0], coef2).to(self.device)
 
             # update the gradients to zero
             self.optimizer.zero_grad()
+            # toc = time.time()
+            # print('setup', abs(tic-toc)) e-3
 
-            if beta is None:
-                embedding = self.encoder(x)
-            else:
-                embedding, sd, mn = self.encoder(x)
+            if beta is None: embedding, predicted_x = self.autoencoder(x)
+            else: embedding, sd, mn, predicted_x = self.autoencoder(x)
+            # tic = time.time()
+            # print('autoencoder total', abs(tic-toc)) #1.3 s
 
-            reg_loss_1 = coef * \
-                torch.norm(embedding, ln_parm).to(self.device)/x.shape[0]
-
-            if reg_loss_1 == 0:
-
-                reg_loss_1 = 0.5
-
-            predicted_x = self.decoder(embedding)
+            reg_loss_1 = coef*torch.norm(embedding, ln_parm).to(self.device)/x.shape[0]
+            if reg_loss_1 == 0: reg_loss_1 = 0.5
 
             contras_loss = con_l(embedding)
             maxi_loss = maxi_(embedding)
+            # toc = time.time()
+            # print('reg losses', abs(tic-toc)) e-05
 
             # reconstruction loss
-            loss = F.mse_loss(x, predicted_x, reduction='mean')
+            mask = (predicted_x!=0)
+            loss = F.mse_loss(x, predicted_x, reduction='mean');
+            loss = (loss*mask.float()).sum()
+            loss /= mask.sum()
+            # tic = time.time()
+            # print('reconstruction losses', abs(tic-toc))
 
             loss = loss + reg_loss_1 + contras_loss - maxi_loss
 
-            # backward pass
             train_loss += loss.item()
+            # toc = time.time()
+            # print('Add losses', abs(tic-toc)) e-5
+
+            # backward pass
             loss.backward()
+            # tic = time.time()
+            # print('backward', abs(tic-toc)) # 2.782796859741211
+
             # update the weights
             self.optimizer.step()
+            # toc = time.time()
+            # print('update', abs(tic-toc)) # e-2
+            
+            # fill embedding if the correct epoch
+            if fill_embeddings:
+                scale_shear,rotation,translation = self.autoencoder.temp_affines
+                # toc = time.time()
+                # print("Fill embs")
+                self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
+                # toc = time.time()
+                # print("\temb",abs(tic-toc))
+                self.scale_shear[sorted] = scale_shear[indices].cpu().reshape((-1,6)).detach().numpy()
+                # toc = time.time()
+                # print("\tss",abs(tic-toc))
+                self.rotation[sorted] = rotation[indices].reshape((-1,6)).cpu().detach().numpy()
+                # toc = time.time()
+                # print("\tr",abs(tic-toc))
+                self.translation[sorted] = translation[indices].reshape((-1,6)).cpu().detach().numpy()
+                # tic = time.time()
+                # print('\tt', abs(tic-toc)) # 2.7684452533721924
 
         return train_loss
 
@@ -254,7 +343,7 @@ class ConvAutoencoder():
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.start_epoch = checkpoint['epoch']
 
-    def get_embedding(self, data, batch_size=32):
+    def get_embedding(self, data, checkpoint, batch_size=32, train='False'):
         """extracts embeddings from the data
 
         Args:
@@ -266,23 +355,167 @@ class ConvAutoencoder():
         """
 
         # builds the dataloader
-        dataloader = DataLoader(
-            data.reshape(-1, data.shape[2], data.shape[3]), batch_size, shuffle=False)
+        dataloader = DataLoader(data, 
+            batch_size, shuffle=False)
 
-        embedding_ = np.zeros(
-            [data.shape[0]*data.shape[1], self.embedding_size])
-        for i, x in enumerate(tqdm(dataloader, leave=True, total=len(dataloader))):
-            with torch.no_grad():
-                value = x
-                test_value = Variable(value.to(self.device))
-                test_value = test_value.float()
-                embedding = self.encoder(test_value).to('cpu').detach().numpy()
-                embedding_[i*batch_size:(i+1)*batch_size, :] = embedding
+        try:
+            try: 
+                h = h5py.File(self.emb_h5_path,'w')
+            except: 
+                h = h5py.File(self.emb_h5_path,'r+')
 
-        self.embedding = embedding_
+            check = checkpoint.split('/')[-1][:-4]
+            try:
+                embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0], self.embedding_size]))
+                scale_shear_ = h.create_dataset(f'scaleshear_{check}', data = np.zeros([data.shape[0],6]))
+                rotation_ = h.create_dataset(f'rotation_{check}', data = np.zeros([data.shape[0],6]))
+                translation_ = h.create_dataset(f'translation_{check}', data = np.zeros([data.shape[0],6]))
+            except: 
+                embedding_ = h[f'embedding_{check}']
+                scale_shear_ = h[f'scaleshear_{check}']
+                rotation_ = h[f'rotation_{check}']                    
+                translation_ = h[f'translation_{check}']
 
-        return embedding_
+            self.embedding = embedding_
+            self.scale_shear = scale_shear_
+            self.rotation = rotation_
+            self.translation = translation_
 
+        except Exception as error:
+            print(error) 
+            assert train,"No h5_dataset embedding dataset created"
+            print('Warning: not saving to h5')
+                
+        if train: 
+            print('Created empty h5 embedding datasets to fill during training')
+            return 1 # do not calculate. 
+            # return true to indicate this is filled during training
+
+        else:
+            for i, (_,x) in enumerate(tqdm(dataloader, leave=True, total=len(dataloader))):
+                with torch.no_grad():
+                    value = x
+                    test_value = Variable(value.to(self.device))
+                    test_value = test_value.float()
+                    embedding,scale_shear,rotation,translation = self.encoder(test_value)
+                    
+                    self.embedding[i*batch_size:(i+1)*batch_size, :] = embedding.cpu().detach().numpy()
+                    self.scale_shear[i*batch_size:(i+1)*batch_size, :] = scale_shear.reshape(-1,6).cpu().detach().numpy()
+                    self.rotation[i*batch_size:(i+1)*batch_size, :] = rotation.reshape(-1,6).cpu().detach().numpy()
+                    self.translation[i*batch_size:(i+1)*batch_size, :] = translation.reshape(-1,6).cpu().detach().numpy()
+
+            # self.embedding = embedding_
+            # self.scale_shear = scale_shear_
+            # self.rotation = rotation_
+            # self.translation = translation_
+
+            # return embedding_,scale_shear_,rotation_,translation_
+
+    def generate_range(self,meta,checkpoint,
+                         ranges=None,
+                         generator_iters=50,
+                         averaging_number=100,
+                         train=False,
+                         **kwargs
+                         ):
+        """Generates images as the variables traverse the latent space
+
+        Args:
+            embedding (tensor, optional): embedding to predict with. Defaults to None.
+            folder_name (str, optional): name of folder where images are saved. Defaults to ''.
+            ranges (list, optional): sets the range to generate images over. Defaults to None.
+            generator_iters (int, optional): number of iterations to use in generation. Defaults to 200.
+            averaging_number (int, optional): number of embeddings to average. Defaults to 100.
+            graph_layout (list, optional): layout parameters of the graph (#graphs,#perrow). Defaults to [2, 2].
+            shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
+        """
+        # sets the kwarg values
+        for key, value in kwargs.items():
+            exec(f'{key} = value')
+
+        channels = np.arange(self.embedding_size)
+        # sets the channels to use in the object
+        if "channels" in kwargs:
+            channels = kwargs["channels"]
+        if "ranges" in kwargs:
+            channels = kwargs["ranges"]
+
+        # # gets the embedding if a specific embedding is not provided
+        # if embedding is None:
+        #     embedding = self.embedding
+        # embedding = self.get_embedding(checkpoint)
+
+        try: # try opening h5 file
+            try: # make new file
+                h = h5py.File(self.gen_h5_path,'w')
+            except: # open existing file
+                h = h5py.File(self.gen_h5_path,'r+')
+
+            check = checkpoint.split('/')[-1][:-4]
+            try: # make new dataset
+                generated = h.create_dataset(check,
+                                            data=np.zeros( [len(meta['particle_list']),
+                                                            generator_iters,
+                                                            len(channels),
+                                                            128,128] ) )
+            except: # open existing dataset for checkpoint
+                generated = h[check]
+        except: # cannot open h5
+            # assert train,"No h5_dataset generated dataset created"
+            # generated = np.zeros( [len(meta['particle_list']),
+            #                         generator_iters,
+            #                         self.channels,
+            #                         128,128] ) 
+            print('Warning: not saving to h5')
+        # # try: # make new dataset
+        # generated = h.create_dataset(check,
+        #                             data=np.zeros( [len(meta['particle_list']),
+        #                                             generator_iters,
+        #                                             channels,
+        #                                             128,128] ) )
+
+        # self.generated = generated
+        # self.embedding = self.load_embedding(checkpoint)
+
+        for p,p_name in enumerate(meta['particle_list']): # each sample
+            print(p, p_name)
+            data=self.embedding[ meta['particle_inds'][p]:\
+                                        meta['particle_inds'][p+1]]
+                
+            # loops around the number of iterations to generate
+            for i in tqdm(range(generator_iters)):
+
+                # loops around all of the embeddings
+                for j, channel in enumerate(channels):
+
+                    if ranges is None: # span this range when generating
+                        ranges = np.stack((np.min(self.embedding, axis=0),
+                                        np.max(self.embedding, axis=0)), axis=1)
+
+                    # linear space values for the embeddings
+                    value = np.linspace(ranges[j][0], ranges[j][1],
+                                        generator_iters)
+
+                    # finds the nearest points to the value and then takes the average
+                    # average number of points based on the averaging number
+                    idx = find_nearest(
+                        data[:,channel],
+                        value[i],
+                        averaging_number)
+
+                    # computes the mean of the selected index to yield 2D image
+                    gen_value = np.mean(data[idx], axis=0)
+
+                    # specifically updates the value of the mean embedding image to visualize 
+                    # based on the linear spaced vector
+                    gen_value[channel] = value[i]
+
+                    # generates diffraction pattern
+                    self.generated[ meta['particle_inds'][p]: meta['particle_inds'][p+1] ] =\
+                        self.generate_spectra(gen_value).squeeze()
+                    
+        return generated
+                    
     def generate_spectra(self, embedding):
         """generates spectra from embeddings
 
@@ -385,6 +618,112 @@ class IdentityBlock(nn.Module):
         return out
 
 
+class Affine_Transform(nn.Module):
+    def __init__(self,
+                 device,
+                 scale = True,
+                 shear = True,
+                 rotation = True,
+                 translation = True,
+                 Symmetric = True,
+                 mask_intensity = True,
+                 scale_limit = 0.05,
+                 shear_limit = 0.1,
+                 rotation_limit = 0.1,
+                 trans_limit = 0.15,
+                 adj_mask_para=0
+                 ):
+        super(Affine_Transform,self).__init__()
+        self.scale = scale
+        self.shear = shear
+        self.rotation = rotation
+        self.translation = translation
+        self.Symmetric = Symmetric
+        self.scale_limit = scale_limit
+        self.shear_limit = shear_limit
+        self.rotation_limit = rotation_limit
+        self.trans_limit = trans_limit
+        self.adj_mask_para = adj_mask_para
+        self.mask_intensity = mask_intensity
+        self.device = device
+        self.count = 0
+
+    def forward(self,out,rotate_value = None):
+
+        if self.scale:
+            scale_1 = self.scale_limit*nn.Tanh()(out[:,self.count])+1
+            scale_2 = self.scale_limit*nn.Tanh()(out[:,self.count+1])+1
+            self.count +=2
+        else:
+            scale_1 = torch.ones([out.shape[0]]).to(self.device)
+            scale_2 = torch.ones([out.shape[0]]).to(self.device)
+
+        if self.rotation:
+            if rotate_value!=None:
+                # use large mask no need to limit to too small range
+                rotate = rotate_value.reshape(out[:,self.count].shape) + self.rotation_limit*nn.Tanh()(out[:,self.count])
+                self.count+=1
+            else:
+                rotate = nn.ReLU()(out[:,self.count])
+                self.count+=1
+        else:
+            rotate = torch.zeros([out.shape[0]]).to(self.device)
+
+        if self.shear:
+            if self.Symmetric:
+                shear_1 = self.shear_limit*nn.Tanh()(out[:,self.count])
+                shear_2 = shear_1
+                self.count+=1
+            else:
+                shear_1 = self.shear_limit*nn.Tanh()(out[:,self.count])
+                shear_2 = self.shear_limit*nn.Tanh()(out[:,self.count+1])
+                self.count+=2
+        else:
+            shear_1 = torch.zeros([out.shape[0]]).to(self.device)
+            shear_2 = torch.zeros([out.shape[0]]).to(self.device)
+        # usually the 4d-stem has symetric shear value, we make xy=yx, that's the reason we don't need shear2
+
+        if self.translation:
+            trans_1 = self.trans_limit*nn.Tanh()(out[:,self.count])
+            trans_2 = self.trans_limit*nn.Tanh()(out[:,self.count+1])
+            self.count +=2
+        else:
+            trans_1 = torch.zeros([out.shape[0]]).to(self.device)
+            trans_2 = torch.zeros([out.shape[0]]).to(self.device)
+  
+        if self.mask_intensity:
+            mask_parameter = self.adj_mask_para*nn.Tanh()(out[:,self.embedding_size:self.embedding_size+1])+1
+        else:
+            # this project doesn't need mask parameter to adjust value intensity in mask region, so we make it 1 here.
+            mask_parameter = torch.ones([out.shape[0]])
+
+        self.count = 0
+ 
+        a_1 = torch.cos(rotate)
+        a_2 = torch.sin(rotate)
+        a_4 = torch.ones([out.shape[0]]).to(self.device)
+        a_5 = torch.zeros([out.shape[0]]).to(self.device)
+
+       # combine shear and strain together
+        c1 = torch.stack((scale_1,shear_1), dim=1).squeeze()
+        c2 = torch.stack((shear_2,scale_2), dim=1).squeeze()
+        c3 = torch.stack((a_5,a_5), dim=1).squeeze()
+        scaler_shear = torch.stack((c1, c2, c3), dim=2)
+
+        # Add the rotation after the shear and strain
+        b1 = torch.stack((a_1,a_2), dim=1).squeeze()
+        b2 = torch.stack((-a_2,a_1), dim=1).squeeze()
+        b3 = torch.stack((a_5,a_5), dim=1).squeeze()
+        rotation = torch.stack((b1, b2, b3), dim=2)
+
+        d1 = torch.stack((a_4,a_5), dim=1).squeeze()
+        d2 = torch.stack((a_5,a_4), dim=1).squeeze()
+        d3 = torch.stack((trans_1,trans_2), dim=1).squeeze()
+        translation = torch.stack((d1, d2, d3), dim=2)
+
+        return scaler_shear, rotation, translation, mask_parameter
+
+
 class Encoder(nn.Module):
     """Encoder block
 
@@ -392,7 +731,7 @@ class Encoder(nn.Module):
         nn (nn.Module): Torch module class
     """
 
-    def __init__(self, original_step_size, pooling_list, embedding_size, conv_size):
+    def __init__(self, original_step_size, pooling_list, embedding_size, conv_size, device):
         """Build the encoder
 
         Args:
@@ -403,7 +742,7 @@ class Encoder(nn.Module):
         """
 
         super(Encoder, self).__init__()
-
+        self.device = device
         blocks = []
 
         self.input_size_0 = original_step_size[0]
@@ -450,6 +789,9 @@ class Encoder(nn.Module):
         self.relu_1 = nn.ReLU()
 
         self.dense = nn.Linear(input_size, embedding_size)
+        self.affine_dense = nn.Linear(embedding_size,7) # TODO: save in (nx6) instead of (nx2x3)
+        self.affine = Affine_Transform(self.device, Symmetric = False,
+                                    mask_intensity = False)
 
     def forward(self, x):
         """Forward pass of the encoder
@@ -469,7 +811,11 @@ class Encoder(nn.Module):
         out = self.dense(out)
         selection = self.relu_1(out)
 
-        return selection
+        # get affine transforms from dense
+        affine_dense = self.affine_dense(selection) 
+        scaler_shear, rotation, translation, mask_parameter = self.affine(affine_dense)
+
+        return selection,scaler_shear, rotation, translation
 
 
 class Decoder(nn.Module):
@@ -511,7 +857,7 @@ class Decoder(nn.Module):
         )
 
         blocks = []
-        number_of_blocks = len(pooling_list)
+        number_of_blocks = len(upsampling_list)
         blocks.append(ConvBlock(t_size=conv_size,
                                 n_step=original_step_size))
         blocks.append(IdentityBlock(
@@ -563,7 +909,7 @@ class Decoder(nn.Module):
 
 
 class AutoEncoder(nn.Module):
-    def __init__(self, enc, dec):
+    def __init__(self, enc, dec,emb_size,device):
         """AutoEncoder model
 
         Args:
@@ -571,22 +917,49 @@ class AutoEncoder(nn.Module):
             dec (nn.Module): Decoder block
         """
         super().__init__()
-
+        self.device = device
         self.enc = enc
         self.dec = dec
+        self.temp_affines = None # saves for filling embedding info
 
     def forward(self, x):
-        """Forward pass of the autoencoder
+        """Forward pass of the autoencoder applies and affine grid to the decoder value
 
         Args:
-            x (Tensor): Input tensor
+            x (Tensor): Input (training data)
 
-        Returns:
-            Tensor: output tensor
+       Returns:
+            embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
         """
+        # tic = time.time()
+        # print("ENCODER")
+        embedding,scaler_shear,rotation,translation = self.enc(x)
+        # toc = time.time()
+        # print("\tencoder",abs(tic-toc))
+        predicted = self.dec(embedding).unsqueeze(1)
+        # tic = time.time()
+        # print("\tdecoder",abs(tic-toc))
+        self.temp_affines = scaler_shear,rotation,translation
+        # toc = time.time()
+        # print("\tfill self.affine",abs(tic-toc))
 
-        embedding = self.enc(x)
+        # sample and apply affine grids
+        size_grid = torch.ones([x.shape[0],1,x.shape[-2],x.shape[-1]])
 
-        predicted = self.dec(embedding)
+        grid_1 = F.affine_grid(scaler_shear.to(self.device), size_grid.size()).to(self.device) # scale shear
+        grid_2 = F.affine_grid(rotation.to(self.device), size_grid.size()).to(self.device) # rotation
+        grid_3 = F.affine_grid(translation.to(self.device), size_grid.size()).to(self.device) # translation
 
-        return predicted
+        predicted = F.grid_sample(predicted,grid_3) # translation first to center
+        predicted = F.grid_sample(predicted,grid_1)
+        predicted = F.grid_sample(predicted,grid_2)
+        # toc = time.time()
+        # print("\tapply grids",abs(tic-toc))
+
+        return embedding,predicted.squeeze()
+
+
+def db_show_im(tensor):
+    import matplotlib.pyplot as plt
+    plt.imshow(tensor.squeeze().detach().cpu())
+    plt.show()

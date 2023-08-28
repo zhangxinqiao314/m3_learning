@@ -7,6 +7,8 @@ from tqdm import tqdm
 from viz.layout import layout_fig, imagemap, labelfigs, find_nearest, add_scalebar
 from os.path import join as pjoin
 from viz.nn import embeddings as embeddings_
+import glob
+import os
 
 class Viz:
 
@@ -78,7 +80,7 @@ class Viz:
                              bright_field_=None,
                              dark_field_=None,
                              scalebar_=True,
-                             filename=None,
+                             datapath=None,
                              shape_=[256, 256, 256, 256],
                              **kwargs):
         """visualizes the raw STEM data and the virtual STEM data
@@ -91,50 +93,61 @@ class Viz:
             filename (string, optional): Name of the file to save. Defaults to None.
             shape_ (list, optional): shape of the original data structure. Defaults to [265, 256, 256, 256].
         """
+        
+        names = [os.path.split(p)[-1] for p in glob.glob(datapath)]
+        l = int(self.model.embedding.shape[0]/len(names))
+        names.sort()
 
-        # sets the number of figures based on how many plots are shown
-        fig_num = 1
-        if bright_field_ is not None:
-            fig_num += 1
-        if dark_field_ is not None:
-            fig_num += 1
+        for i in range(shape_[0]): # each sample
+            plotdata = data.processed[l*i:l*(i+1)]
+            
+            # sets the number of figures based on how many plots are shown
+            fig_num = 1
+            if bright_field_ is not None:
+                fig_num += 1
+            if dark_field_ is not None:
+                fig_num += 1
 
-        # creates the figure
-        fig, axs = layout_fig(fig_num, fig_num, figsize=(
-            1.5*fig_num, 1.25))
+            # creates the figure
+            fig, axs = layout_fig(fig_num, fig_num, figsize=(
+                                  1.5*fig_num, 1.25))
+            a=0
+            # plots the raw STEM data
+            imagemap(axs[a], np.mean(plotdata.reshape(-1,shape_[-2],shape_[-1]),
+                                     axis=0), divider_=False)
+            a+=1
 
-        # plots the raw STEM data
-        imagemap(axs[0], np.mean(data.log_data.reshape(-1,
-                                                       shape_[2], shape_[3]), axis=0), divider_=False)
+            # plots the virtual bright field image
+            if bright_field_ is not None:
+                bright_field = plotdata.reshape(-1, shape_[-2], shape_[-1])[:, 
+                                                                             bright_field_[0]:bright_field_[1], 
+                                                                             bright_field_[2]:bright_field_[3]]
+                bright_field = np.mean(bright_field.reshape(shape_[-4]*shape_[-3], -1), 
+                                       axis=1).reshape(shape_[-4], shape_[-3])
+                imagemap(axs[a], bright_field, divider_=False)
+                a+=1
 
-        # plots the virtual bright field image
-        if bright_field_ is not None:
-            bright_field = data.data.reshape(-1, shape_[2], shape_[3])[:, bright_field_[0]:bright_field_[
-                1], bright_field_[2]:bright_field_[3]]
-            bright_field = np.mean(bright_field.reshape(
-                shape_[0]*shape_[1], -1), axis=1).reshape(shape_[0], shape_[1])
-            imagemap(axs[1], bright_field, divider_=False)
+            # plots the virtual dark field image
+            if dark_field_ is not None:
+                dark_field = plotdata.reshape(shape_[-4],shape_[-3],
+                                              shape_[-2],shape_[-1])[:,:, 
+                                                                    dark_field_[0]:dark_field_[1], 
+                                                                    dark_field_[2]:dark_field_[3]]
+                dark_field = np.mean(dark_field,axis=(2,3))
+                imagemap(axs[a], dark_field, divider_=False)
 
-        # plots the virtual dark field image
-        if dark_field_ is not None:
-            dark_field = data.data.reshape(-1, shape_[2], shape_[3])[:, dark_field_[0]:dark_field_[
-                1], dark_field_[2]:dark_field_[3]]
-            dark_field = np.mean(dark_field.reshape(
-                shape_[0]*shape_[1], -1), axis=1).reshape(shape_[0], shape_[1])
-            imagemap(axs[2], dark_field, divider_=False)
+            # adds labels to the figure
+            if self.labelfigs_:
+                for j, ax in enumerate(axs):
+                    labelfigs(ax, j)
 
-        # adds labels to the figure
-        if self.labelfigs_:
-            for i, ax in enumerate(axs):
-                labelfigs(ax, i)
+            if scalebar_:
+                # adds a scalebar to the figure
+                add_scalebar(axs[-1], self.scalebar_)
 
-        if scalebar_:
-            # adds a scalebar to the figure
-            add_scalebar(axs[-1], self.scalebar_)
-
-        # saves the figure
-        if self.printer is not None:
-            self.printer.savefig(fig, filename, tight_layout=False)
+            # saves the figure
+            if self.printer is not None:
+                self.printer.savefig(fig, names[i], tight_layout=False)
 
     def find_nearest(self, array, value, averaging_number):
         """Finds the nearest value in an array
@@ -168,14 +181,39 @@ class Viz:
             values = values.detach().numpy()
             return values
 
-    def generator_images(self,
+    def embeddings(self,meta,savefolder,overwrite=False, **kwargs):
+        """function to plot the embeddings of the data
+        """        
+        # if savefolder
+        for i,p_name in enumerate(tqdm(meta['particle_list'])): # each sample
+            if overwrite: 
+                existing = [item.split('/')[-1] for item in glob.glob(f'{self.printer.basepath}{savefolder}*')]
+                if p_name+'_embedding_maps.png' in existing:
+                    print('skipping',savefolder+p_name+'_embedding_maps.png')
+                    continue
+
+            data=self.model.embedding[ meta['particle_inds'][i]:\
+                                        meta['particle_inds'][i+1]]
+            embeddings_(data, 
+                    channels=self.channels, 
+                    labelfigs_ = self.labelfigs_,
+                    printer = self.printer,
+                    shape_=meta['shape_list'][i],
+                    name = savefolder+p_name,
+                    clim=(0,data.max()),
+                    **kwargs)
+            plt.clf();
+            plt.close();
+            
+    def generator_images(self,meta,generated,
                          embedding=None,
                          folder_name='',
                          ranges=None,
-                         generator_iters=200,
+                         generator_iters=50,
                          averaging_number=100,
                          graph_layout=[2, 2],
-                         shape_=[256, 256, 256, 256],
+                         shape_=[256, 256, 128, 128],
+                         clim=(0.0,1.0),
                          **kwargs
                          ):
         """Generates images as the variables traverse the latent space
@@ -186,7 +224,7 @@ class Viz:
             ranges (list, optional): sets the range to generate images over. Defaults to None.
             generator_iters (int, optional): number of iterations to use in generation. Defaults to 200.
             averaging_number (int, optional): number of embeddings to average. Defaults to 100.
-            graph_layout (list, optional): layout parameters of the graph. Defaults to [2, 2].
+            graph_layout (list, optional): layout parameters of the graph (#graphs,#perrow). Defaults to [2, 2].
             shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
         """
 
@@ -202,69 +240,39 @@ class Viz:
         if embedding is None:
             embedding = self.model.embedding
 
-        # makes the folder to save the images
-        folder = make_folder(
-            self.printer.basepath + f"generator_images_{folder_name}/")
+        for p,p_name in enumerate(meta['particle_list']): # each sample
+            print(p, p_name)
+            data=self.model.embedding[ meta['particle_inds'][p]:\
+                                        meta['particle_inds'][p+1]]
+                
+            # loops around the number of iterations to generate
+            for i in tqdm(range(generator_iters)):
 
-        # loops around the number of iterations to generate
-        for i in tqdm(range(generator_iters)):
+                # builds the figure
+                fig, ax = layout_fig(graph_layout[0], graph_layout[1], **kwargs)
+                ax = ax.reshape(-1)
 
-            # builds the figure
-            fig, ax = layout_fig(graph_layout[0], graph_layout[1], **kwargs)
-            ax = ax.reshape(-1)
+                # loops around all of the embeddings
+                for j, channel in enumerate(self.channels):
 
-            # loops around all of the embeddings
-            for j, channel in enumerate(self.channels):
+                    if ranges is None:
+                        ranges = np.stack((np.min(self.model.embedding, axis=0),
+                                        np.max(self.model.embedding, axis=0)), axis=1)
 
-                if ranges is None:
-                    ranges = np.stack((np.min(self.model.embedding, axis=0),
-                                       np.max(self.model.embedding, axis=0)), axis=1)
+                    imagemap(ax[j], generated[p,i,j], clim=clim,**kwargs)
+                    
+                    ax[j].plot(3, 3, marker='o', markersize=4,
+                               markerfacecolor=self.cmap((i+1)/generator_iters))
 
-                # linear space values for the embeddings
-                value = np.linspace(ranges[j][0], ranges[j][1],
-                                    generator_iters)
+                    axes_in = ax[j].inset_axes([0.55, 0.02, 0.43, 0.43])
 
-                # finds the nearest point to the value and then takes the average
-                # average number of points based on the averaging number
-                idx = find_nearest(
-                    self.model.embedding[:, channel],
-                    value[i],
-                    averaging_number)
-
-                # computes the mean of the selected index
-                gen_value = np.mean(self.model.embedding[idx], axis=0)
-
-                # specifically updates the value of the embedding to visualize based on the
-                # linear spaced vector
-                gen_value[channel] = value[i]
-
-                # generates the loop based on the model
-                generated = self.model.generate_spectra(gen_value).squeeze()
-
-                imagemap(ax[j], generated.reshape(
-                    shape_[0], shape_[1]), clim=[0, 6], **kwargs)
-                ax[j].plot(3, 3, marker='o', markerfacecolor=self.cmap(
-                    (i + 1) / generator_iters))
-
-                axes_in = ax[j].inset_axes([0.55, 0.02, 0.43, 0.43])
-
-                # plots the imagemap and formats
-                imagemap(axes_in, self.model.embedding[:, channel].reshape(
-                    shape_[2], shape_[3]), clim=ranges[j], colorbars=False)
-
-            if self.printer is not None:
-                self.printer.savefig(fig,
-                                     f'{i:04d}_maps', tight_layout=False, basepath=folder)
-
-            plt.close(fig)
+                    # plots the imagemap and formats embedding
+                    imagemap(axes_in, data[:,channel].reshape(meta['shape_list'][p][-4], 
+                                                   meta['shape_list'][p][-3]), clim=ranges[j], colorbars=False)
+                        
+                if self.printer is not None:
+                    self.printer.savefig(fig,
+                                    f'{p_name}_{i:04d}_maps', tight_layout=False, basepath=folder_name)
+                plt.close(fig);
             
-    def embeddings(self, **kwargs):
-        """function to plot the embeddings of the data
-        """        
-        
-        embeddings_(self.model.embedding, 
-                   channels=self.channels, 
-                   labelfigs_ = self.labelfigs_,
-                   printer = self.printer, 
-                   **kwargs)
-        
+  

@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
-from m3_learning.util.file_IO import make_folder
-from m3_learning.viz.layout import labelfigs
+from util.file_IO import make_folder
+from viz.layout import labelfigs
 
 
 class printer:
@@ -16,7 +16,7 @@ class printer:
         self.dpi = dpi
         self.basepath = basepath
         self.fileformats = fileformats
-        make_folder(self.basepath)
+        make_folder(self.basepath);
 
     def savefig(self, fig, name, tight_layout=False, basepath=None, label_figs=None, **kwargs):
         """Function to save a figure
@@ -26,19 +26,19 @@ class printer:
             name (str): file name to save the figure
         """
         if tight_layout:
-            fig.tight_layout()
+            fig.tight_layout();
 
         if basepath is None:
             basepath = self.basepath
 
         if label_figs is not None:
             for i, ax in enumerate(label_figs):
-                labelfigs(ax, i, **kwargs)
+                labelfigs(ax, i, **kwargs);
 
         for fileformat in self.fileformats:
-            print(basepath + name + "." + fileformat)
+            # print(basepath + name + "." + fileformat)
             fig.savefig(
                 basepath + name + "." + fileformat,
                 dpi=self.dpi,
                 bbox_inches="tight",
-            )
+            );
