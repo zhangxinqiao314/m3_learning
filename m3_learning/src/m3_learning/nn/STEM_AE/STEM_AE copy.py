@@ -21,6 +21,7 @@ from datetime import date
 import sys
 import os
 # sys.path.append(os.path.abspath("./../STEM_AE")) # or whatever the name of the immediate parent folder is
+## TODO: change this model so transforms are applied separately
 
 class ConvAutoencoder():
     """builds the convolutional autoencoder
@@ -38,7 +39,7 @@ class ConvAutoencoder():
                  learning_rate=3e-5,
                  emb_h5_path = './Combined_all_samples/embeddings.h5',
                  gen_h5_path = './Combined_all_samples/generated.h5',
-                 ):
+                 train = True):
         """Initialization function
 
         Args:
@@ -61,7 +62,7 @@ class ConvAutoencoder():
         self.learning_rate = learning_rate
 
         self.checkpoint = checkpoint
-        # self.train = train
+        self.train = train
 
         self.emb_h5_path = emb_h5_path
         self.gen_h5_path = gen_h5_path
@@ -333,10 +334,10 @@ class ConvAutoencoder():
         self.decoder.load_state_dict(checkpoint['decoder'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.start_epoch = checkpoint['epoch']
-        check = path_checkpoint.split('/')[-1][:-4]
 
         try:
             h = h5py.File(self.emb_h5_path,'r+')
+            check = checkpoint.split('/')[-1][:-4]
             self.embedding = h[f'embedding_{check}']
             self.scale_shear = h[f'scaleshear_{check}']
             self.rotation = h[f'rotation_{check}']                    
@@ -344,15 +345,15 @@ class ConvAutoencoder():
         except Exception as error:
             print(error)
             print('Embedding and affines not opened')
-
         try:
             h = h5py.File(self.gen_h5_path,'r+')
+            check = checkpoint.split('/')[-1][:-4]
             self.generated = h[check]
         except Exception as error:
             print(error)
             print('Generated not opened')
 
-    def get_embedding(self, data, batch_size=32,train=True):
+    def get_embedding(self, data, batch_size=32):
         """extracts embeddings from the data
 
         Args:
@@ -395,7 +396,7 @@ class ConvAutoencoder():
             assert self.train,"No h5_dataset embedding dataset created"
             print('Warning: not saving to h5')
                 
-        if train: 
+        if self.train: 
             print('Created empty h5 embedding datasets to fill during training')
             return 1 # do not calculate. 
             # return true to indicate this is filled during training
@@ -419,7 +420,6 @@ class ConvAutoencoder():
                          generator_iters=50,
                          averaging_number=100,
                          overwrite=False,
-                         with_affine=False,
                          **kwargs
                          ):
         """Generates images as the variables traverse the latent space.
@@ -515,7 +515,7 @@ class ConvAutoencoder():
 
         # return self.generated
                     
-    def generate_spectra(self, embedding,with_affine=False):
+    def generate_spectra(self, embedding):
         """generates spectra from embeddings
 
         Args:
@@ -527,8 +527,6 @@ class ConvAutoencoder():
 
         embedding = torch.from_numpy(np.atleast_2d(embedding)).to(self.device)
         embedding = self.decoder(embedding.float())
-        if with_affine:
-            embedding = self.transformer(embedding)
         embedding = embedding.cpu().detach().numpy()
         return embedding
 
@@ -908,71 +906,20 @@ class Decoder(nn.Module):
 
         return output
 
-## TODO: adjust transformer class so we can apply transforms during decoding
-class Transformer(nn.Module):
-#     def __init__(self,device):
-#         """AutoEncoder model
-
-#         Args:
-#             enc (nn.Module): Encoder block
-#             dec (nn.Module): Decoder block
-#         """
-#         super().__init__()
-#         self.device = device
-
-#     def forward(self, x):
-#         """Forward pass of the autoencoder applies and affine grid to the decoder value
-
-#         Args:
-#             x (Tensor): Input (training data)
-
-#        Returns:
-#             embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
-#         """
-#         predicted,affines = x
-#         scaler_shear,rotation,translation = affines
-        
-#         # sample and apply affine grids
-#         size_grid = torch.ones([predicted.shape[0], 1, 
-#                                 predicted.shape[-2], 
-#                                 predicted.shape[-1]])
-
-#         grid_1 = F.affine_grid(scaler_shear.to(self.device), 
-#                                size_grid.size()).to(self.device) # scale shear
-#         grid_2 = F.affine_grid(rotation.to(self.device), 
-#                                size_grid.size()).to(self.device) # rotation
-#         grid_3 = F.affine_grid(translation.to(self.device), 
-#                                size_grid.size()).to(self.device) # translation
-        
-#         predicted = F.grid_sample(predicted,grid_3) # translation first to center
-#         predicted = F.grid_sample(predicted,grid_1)
-#         predicted = F.grid_sample(predicted,grid_2)
-
-#         return predicted
-    pass
-        
-
 class AutoEncoder(nn.Module):
-    def __init__(self, enc, dec,emb_size,device,
-                 training=True,generator_mode='affine'):
+    def __init__(self, enc, dec,emb_size,device,train=True):
         """AutoEncoder model
 
         Args:
             enc (nn.Module): Encoder block
             dec (nn.Module): Decoder block
-            emb_size ():
-            device():
-            train (bool): 
-            mode (): {'affine','no_affine'}
         """
         super().__init__()
         self.device = device
         self.enc = enc
         self.dec = dec
         self.temp_affines = None # saves for filling embedding info
-        self.training = training
-        self.generator_mode = generator_mode
-        # self.transformer = Transformer(self.device)
+        self.train = train
 
     def forward(self, x):
         """Forward pass of the autoencoder applies and affine grid to the decoder value
@@ -983,13 +930,17 @@ class AutoEncoder(nn.Module):
        Returns:
             embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
         """
+        # tic = time.time()
+        # print("ENCODER")
         embedding,scaler_shear,rotation,translation = self.enc(x)
+        # toc = time.time()
+        # print("\tencoder",abs(tic-toc))
         predicted = self.dec(embedding).unsqueeze(1)
+        # tic = time.time()
+        # print("\tdecoder",abs(tic-toc))
         self.temp_affines = scaler_shear,rotation,translation
-        
-        if self.generator_mode=='no_affine':
-            if self.training: return embedding,predicted.squeeze()
-            else: return predicted.squeeze()
+        # toc = time.time()
+        # print("\tfill self.affine",abs(tic-toc))
 
         # sample and apply affine grids
         size_grid = torch.ones([x.shape[0],1,x.shape[-2],x.shape[-1]])
@@ -1001,12 +952,11 @@ class AutoEncoder(nn.Module):
         predicted = F.grid_sample(predicted,grid_3) # translation first to center
         predicted = F.grid_sample(predicted,grid_1)
         predicted = F.grid_sample(predicted,grid_2)
-
-        if self.generator_mode=='affine':
-            if self.training: return embedding,predicted.squeeze()
-            else: return predicted.squeeze()
-        
-        assert False, 'set train to True/False, and generator_mode to affine/no_affine'
+        # toc = time.time()
+        # print("\tapply grids",abs(tic-toc))
+        if self.train: return embedding,predicted.squeeze()
+        elif not self.train: return predicted.squeeze()
+        else: assert False, 'train true or not?'
 
 def db_show_im(tensor):
     import matplotlib.pyplot as plt

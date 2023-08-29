@@ -179,7 +179,8 @@ def embedding_maps(data, image, colorbar_shown=True, c_lim=None, mod=None, title
     fig.tight_layout()
 
 
-def imagemap(ax, data, colorbars=True, clim=None, divider_=True, cbar_number_format="%.1e", **kwargs):
+def imagemap(ax, data, colorbars=True, clim=None, divider_=True, cbar_number_format="%.1e", 
+             colormap = 'viridis',**kwargs):
     """pretty way to plot image maps with standard formats
 
     Args:
@@ -191,11 +192,11 @@ def imagemap(ax, data, colorbars=True, clim=None, divider_=True, cbar_number_for
 
     if data.ndim == 1:
         data = data.reshape(
-            np.sqrt(data.shape[0]).astype(
-                int), np.sqrt(data.shape[0]).astype(int)
+            np.sqrt(data.shape[0]).astype(int), 
+            np.sqrt(data.shape[0]).astype(int)
         )
 
-    cmap = plt.get_cmap("viridis")
+    cmap = plt.get_cmap(colormap)
 
     if clim is None:
         im = ax.imshow(data, cmap=cmap)

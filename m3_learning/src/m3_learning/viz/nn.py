@@ -54,6 +54,109 @@ def embeddings(embedding, mod=4,
         printer.savefig(fig,
             f'{name}_embedding_maps', tight_layout=False)
         
+
+def get_theta(rotation):
+    """_summary_
+
+    Args:
+        rotation (array-like): (n,2,3) affine matrix reshapeed into (n,6)
+
+    Returns:
+        float: _description_
+    """    
+    acos = np.arccos(rotation[:,0])
+    asin = np.arcsin(rotation[:,1])
+    theta = asin.copy()
+
+    # asin(+), acos(+) means the angle is accurate
+    # asin(-), acos(-) means 3rd quadrant
+    theta[ np.intersect1d(np.argwhere(acos<0), np.argwhere(asin<0)) ] *= -1 
+    theta[ np.intersect1d(np.argwhere(acos<0), np.argwhere(asin<0)) ] += -np.pi
+    # asin(+), acos(-) means 2nd quadrant
+    theta[ np.intersect1d(np.argwhere(acos<0), np.argwhere(asin>0)) ] *= -1
+    theta[ np.intersect1d(np.argwhere(acos<0), np.argwhere(asin>0)) ] += np.pi/2
+    
+    return theta
+
+def affines(affines,
+            shape_=[255, 256, 256, 256], 
+            scale=True,
+            shear=True,
+            trans=True,
+            rot=True,
+            name="",
+            labelfigs_ = False,
+            scalebar_ = None,
+            printer = None,
+            **kwargs):
+    """Plots the embeddings
+
+    Args:
+        embedding (tuple of array-like): (scale_shear,rotation,translation) matrices from AffineTransform class.
+                                         If not calculated, put None.
+        # mod (int, optional): defines the number of columns in the figure. Defaults to 4.
+        channels (bool, optional): specific channels to plot. Defaults to False.
+        scalebar_ (dict, optional): add the scalebar. Defaults to None.
+        shape_ (list, optional): shape of the initial image. Defaults to [265, 256, 256, 256].
+        name (str, optional): filename. Defaults to "".
+        channels (bool, optional): _description_. Defaults to False.
+        labelfigs_ (bool, optional): _description_. Defaults to False.
+        add_scalebar (_type_, optional): _description_. Defaults to None.
+        printer (_type_, optional): _description_. Defaults to None.
+    """        
+
+    scale_shear,rotation,translation = affines
+
+    # # sets the channels to use in the object
+    # if channels is None:
+    #     channels = range(7)
+
+    num_plots = 2*shear + 2*scale + 2*trans + rot
+    # builds the figure
+    fig, axs = layout_fig(num_plots, mod=2, **kwargs)
+
+    i=0
+    # translation
+    if trans:
+        imagemap(axs[i], translation[:,2].reshape(shape_[-4], shape_[-3]), 
+                 divider_=False, **kwargs) # scale x
+        imagemap(axs[i+1], translation[:,5].reshape(shape_[-4], shape_[-3]), 
+                 divider_=False, **kwargs) # scale y
+        i+=2
+    # scale_shear
+    if scale:
+        imagemap(axs[i], scale_shear[:,0].reshape(shape_[-4], shape_[-3]), 
+                 divider_=False, **kwargs) # scale x
+        imagemap(axs[i+1], scale_shear[:,4].reshape(shape_[-4], shape_[-3]), 
+                 divider_=False, **kwargs) # scale y
+        i+=2
+    if shear:
+        imagemap(axs[i], scale_shear[:,1].reshape(shape_[-4], shape_[-3]), 
+                 divider_=False, **kwargs) # shear x
+        imagemap(axs[i+1], scale_shear[:,3].reshape(shape_[-4], shape_[-3]), 
+                 divider_=False, **kwargs) # shear y
+        i+=2
+    # rotation
+    if rot:
+        theta = get_theta(rotation)
+        # lim = abs(theta.mean())+abs(3*theta.std())
+        imagemap(axs[i], theta.reshape(shape_[-4], shape_[-3]), 
+                 divider_=False,**kwargs) # rotation angle
+
+    # adds labels to the figure
+    if labelfigs_:
+        for i, ax in enumerate(axs):
+            labelfigs(ax, i)
+
+    # adds the scalebar
+    if scalebar_ is not None:
+        add_scalebar(axs.flatten()[-1], scalebar_)
+
+    # prints the image
+    if printer is not None:
+        printer.savefig(fig,
+            f'{name}_affine_maps', tight_layout=False)
+        
 def latent_generator(
     model,
     embeddings,

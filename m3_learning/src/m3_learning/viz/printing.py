@@ -41,4 +41,4 @@ class printer:
                 basepath + name + "." + fileformat,
                 dpi=self.dpi,
                 bbox_inches="tight",
-            );
+            )
