@@ -77,12 +77,10 @@ class Viz:
         else:
             self._channels = channels
 
-    def STEM_raw_and_virtual(self, data,
-                             bright_field_=None,
-                             dark_field_=None,
+    def STEM_raw_and_virtual(self, dataset,ind,
+                             bright_field_=True,
+                             dark_field_=True,
                              scalebar_=True,
-                             datapath=None,
-                             shape_=[256, 256, 256, 256],
                              **kwargs):
         """visualizes the raw STEM data and the virtual STEM data
 
@@ -94,61 +92,61 @@ class Viz:
             filename (string, optional): Name of the file to save. Defaults to None.
             shape_ (list, optional): shape of the original data structure. Defaults to [265, 256, 256, 256].
         """
+        # ind = dataset.meta['particle_list'].where(particle)
+        h=dataset.open_h5()
+        data = h['processed_data'][dataset.meta['particle_inds'][ind]:
+                                   dataset.meta['particle_inds'][ind+1]]
         
-        names = [os.path.split(p)[-1] for p in glob.glob(datapath)]
-        l = int(self.model.embedding.shape[0]/len(names))
-        names.sort()
+        # sets the number of figures based on how many plots are shown
+        fig_num = 1
+        if bright_field_:
+            fig_num += 1
+        if dark_field_:
+            fig_num += 1
 
-        for i in range(shape_[0]): # each sample
-            plotdata = data.processed[l*i:l*(i+1)]
-            
-            # sets the number of figures based on how many plots are shown
-            fig_num = 1
-            if bright_field_ is not None:
-                fig_num += 1
-            if dark_field_ is not None:
-                fig_num += 1
+        # creates the figure
+        fig, axs = layout_fig(fig_num, fig_num, figsize=(
+                                1.5*fig_num, 1.25))
+        a=0
+        # plots the raw STEM data
+        imagemap(axs[a], np.mean(data, axis=0), divider_=False)
+        a+=1
 
-            # creates the figure
-            fig, axs = layout_fig(fig_num, fig_num, figsize=(
-                                  1.5*fig_num, 1.25))
-            a=0
-            # plots the raw STEM data
-            imagemap(axs[a], np.mean(plotdata.reshape(-1,shape_[-2],shape_[-1]),
-                                     axis=0), divider_=False)
+        # plots the virtual bright field image
+        if bright_field_ is not None:
+            bright_field = data[:,dataset.BF_inds[ind][0],
+                                  dataset.BF_inds[ind][1]]
+            bright_field = bright_field.mean(axis=1)
+            bright_field = bright_field.reshape(dataset.meta['shape_list'][ind][0],
+                                                dataset.meta['shape_list'][ind][1])
+            imagemap(axs[a], bright_field, divider_=False)
             a+=1
 
-            # plots the virtual bright field image
-            if bright_field_ is not None:
-                bright_field = plotdata.reshape(-1, shape_[-2], shape_[-1])[:, 
-                                                                             bright_field_[0]:bright_field_[1], 
-                                                                             bright_field_[2]:bright_field_[3]]
-                bright_field = np.mean(bright_field.reshape(shape_[-4]*shape_[-3], -1), 
-                                       axis=1).reshape(shape_[-4], shape_[-3])
-                imagemap(axs[a], bright_field, divider_=False)
-                a+=1
+        # plots the virtual dark field image
+        if dark_field_ is not None:
+            dark_field = data
+            dark_field[:,dataset.BF_inds[ind][0],
+                         dataset.BF_inds[ind][1]] = 0
+            
+            dark_field = np.mean(dark_field,axis=(1,2))
+            dark_field.reshape(dataset.meta['shape_list'][ind][0],
+                               dataset.meta['shape_list'][ind][1])
+            imagemap(axs[a], dark_field, divider_=False)
 
-            # plots the virtual dark field image
-            if dark_field_ is not None:
-                dark_field = plotdata.reshape(shape_[-4],shape_[-3],
-                                              shape_[-2],shape_[-1])[:,:, 
-                                                                    dark_field_[0]:dark_field_[1], 
-                                                                    dark_field_[2]:dark_field_[3]]
-                dark_field = np.mean(dark_field,axis=(2,3))
-                imagemap(axs[a], dark_field, divider_=False)
+        # adds labels to the figure
+        if self.labelfigs_:
+            for j, ax in enumerate(axs):
+                labelfigs(ax, j)
 
-            # adds labels to the figure
-            if self.labelfigs_:
-                for j, ax in enumerate(axs):
-                    labelfigs(ax, j)
+        if scalebar_:
+            # adds a scalebar to the figure
+            add_scalebar(axs[-1], self.scalebar_)
 
-            if scalebar_:
-                # adds a scalebar to the figure
-                add_scalebar(axs[-1], self.scalebar_)
+        make_folder(f'{self.printer.basepath}bf_df/')
+        # saves the figure
+        if self.printer is not None:
+            self.printer.savefig(fig, f'bf_df/{dataset.meta["particle_list"][ind]}', tight_layout=False)
 
-            # saves the figure
-            if self.printer is not None:
-                self.printer.savefig(fig, names[i], tight_layout=False)
 
     def find_nearest(self, array, value, averaging_number):
         """Finds the nearest value in an array
@@ -290,7 +288,7 @@ class Viz:
             for i in tqdm(range(generator_iters)):
                 if not overwrite:
                     if f'{i:04d}_maps.png' in existing:
-                        # print('skipping',f'{folder_name}/{p_name}/{i:04d}_maps')
+                        print('skipping',f'{folder_name}/{p_name}/{i:04d}_maps')
                         continue
 
                 # builds the figure

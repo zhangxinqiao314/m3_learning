@@ -63,6 +63,7 @@ class STEM_Dataset(Dataset):
                 self.bad_files.append(path)
                 self.meta['path_list'].remove(path)
                 print('bad',path)
+        self.meta['sample_inds'].append(i)        
         print(len(self.meta['shape_list']), 'valid samples')
 
         self.shape = self.__len__(),128,128
@@ -90,16 +91,22 @@ class STEM_Dataset(Dataset):
         self.scaler = StandardScaler()
         self.scaler.fit( h['processed_data'][0:self.__len__():5000].reshape(-1,128*128) )
 
-    ## TODO: figure out mask positions in the init function
+        print('finding brightfield indices')
         # figure out mask
-        self.mask_positions=[]
-        
+        self.BF_inds=[]
+        for i in tqdm(range(len(self.data_list))):
+            start = self.meta['particle_inds'][i]
+            stop = self.meta['particle_inds'][i+1]
+            img = h['processed_data'][start:stop:20].mean(0)
+            thresh = img.mean()+img.std()*7
+            self.BF_inds.append(np.argwhere(img>thresh).T)
+
         print('done')
 
     def __len__(self):
         return sum( [shp[0]*shp[1] for shp in self.meta['shape_list']] )
     
-    def __getitem__(self,index):
+    def __getitem__(self,index): ## TODO: fix bf masking
         with h5py.File(self.h5_name, 'r+') as h5:
             img = h5['processed_data'][index]
             img = img.reshape(-1,128*128)
@@ -108,12 +115,17 @@ class STEM_Dataset(Dataset):
             mean = img.mean()
             std = img.std()
             mask = abs(img)<mean+std*5
+            # img[self.BF_inds]
 
             # return img
             return index,img*mask
 
     def open_h5(self):
         return h5py.File(self.h5_name, 'r+')
+
+    def close_h5(self): 
+        with h5py.File(self.h5_name, 'r+') as h5:
+            h5.close()
 
     def view_log(self,index):
         with h5py.File(self.h5_name, 'r+') as h5:
@@ -132,15 +144,6 @@ class STEM_Dataset(Dataset):
 
         # # Return the diffraction pattern as input and a dummy label (can be anything since we're not using it)
         # return diffraction_pattern, torch.tensor(0)
-    
-    # def crop(self,bbox):
-    #     (bx1,bx2,by1,by2)=bbox
-    #     h = h5py.File(self.h5_name,'r+')
-    #     del h['processed']
-    #     h.create_dataset('processed',
-    #                      data=np.log(h['raw_data'][bx1:bx2,by1,by2] + 1),
-    #                      dtype=float)
-    #     h.close()
 
     def subtract_background(self,img,**kwargs):
         return img - gaussian_filter(img,**kwargs)
