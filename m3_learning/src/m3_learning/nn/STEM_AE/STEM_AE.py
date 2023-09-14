@@ -182,7 +182,7 @@ class ConvAutoencoder():
             if epoch % save_emb_every ==0: # tell loss function to give embedding
                 print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
                 print('.............................')
-                fill_embeddings = self.get_embedding(data, 'temp.pkl', train=True)
+                fill_embeddings = self.get_embedding(data, train=True)
 
 
             train = self.loss_function(
