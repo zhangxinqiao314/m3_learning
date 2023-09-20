@@ -182,6 +182,171 @@ class STEM_Dataset(Dataset):
         h['processed'][args] = thresh
         h.close()
 
+
+class STEM_EELS_Dataset(Dataset):
+    """Class for the STEM dataset.
+    """
+    def __init__(self, save_path,overwrite=False,**kwargs):
+        """Initialization of the class.
+
+        Args:
+            save_path (string): path where the hyperspy file is located
+        """
+        self.save_path = save_path
+        self.h5_name = f'{save_path}/combined_data.h5'
+
+        # create and sort metadata 
+        self.meta = {}
+        stem_path_list = glob.glob(f'{save_path}/*/diff*/Diffraction SI.dm4')
+        eels_ll_list = glob.glob(f'{save_path}/*/eels*/EELS LL SI.dm4')
+        eels_hl_list = glob.glob(f'{save_path}/*/eels*/EELS HL SI.dm4')
+        def get_number(path):
+            return int(path.split('/')[-2].split('-')[-1])
+        def get_particle(path):
+            return path.split('/')[-3].split('TRI-8c-5-')[-1]
+        stem_path_list.sort(key=get_number)
+        stem_path_list.sort(key=get_particle)
+        eels_ll_list.sort(key=get_number)
+        eels_ll_list.sort(key=get_particle)
+        eels_hl_list.sort(key=get_number)
+        eels_hl_list.sort(key=get_particle)
+        self.meta['path_list'] = list(zip(stem_path_list,eels_ll_list,eels_hl_list))
+        
+        # create/ open h5 file
+        if not os.path.exists(self.h5_name): 
+            h = h5py.File(self.h5_name,'w')
+            h.close()
+            h = h5py.File(self.h5_name,'r+')
+        else: 
+            h = h5py.File(self.h5_name,'r+')
+
+        print('fetching metadata...')
+        self.meta['particle_list'] = [] # names of particle 'folder(#)' TODO: make 2 digit counting number
+        self.data_list = [] # TODO: make tuple (stem, eels)
+        self.meta['shape_list'] = []
+        self.meta['scale'] = [] ## TODO: implement s.axes_manager['x'].scale, shape (x,y,sig)
+        self.bad_files = [] # TODO: if stem or eels is bad, throw out both
+        self.meta['particle_inds'] = [0]
+        self.meta['sample_inds'] = [0]
+
+        # go through data files and fill metadata
+        for i,(dpath,lpath,hpath) in enumerate(tqdm(self.meta['path_list'])):
+            try:
+                diff = hs.load(dpath, lazy=True)
+                ll = hs.load(lpath,lazy=True)
+                hl = hs.load(hpath,lazy=True)
+                
+                self.data_list.append((diff.data, ll.data, hl.data))
+                self.meta['particle_list'].append(f'AuCo({get_number(dpath):02d})')
+                self.meta['shape_list'].append((diff.data.shape, ll.data.shape, hl.data.shape))
+                self.meta['particle_inds'].append(self.meta['particle_inds'][-1] + \
+                                                    diff.data.shape[0]*diff.data.shape[1])
+                self.meta['scale'].append((diff.axes_manager['x'].scale, 
+                                           ll.axes_manager['Energy loss'].scale, 
+                                           hl.axes_manager['Energy loss'].scale))
+                
+                if i>1 and self.meta['particle_list'][-1].split('(')[0] != self.meta['particle_list'][-2].split('(')[0]:
+                    self.meta['sample_inds'].append(i) # start of new sample
+                # # print(path)
+            except:
+                self.bad_files.append((dpath,lpath,hpath))
+                self.meta['path_list'].remove((dpath,lpath,hpath))
+                print('bad',dpath,lpath,hpath )
+        print(len(self.meta['shape_list']), 'valid samples')
+
+        self.shape = self.__len__(),128,128
+        return
+        # create h5 dataset, fill metadata, and transfer data from dm4 files to h5
+        if overwrite or 'processed_data' not in h:
+            if 'processed_data' in h: del h['processed_data']
+            print('writing processed_data h5 dataset')
+            h.create_dataset('processed_data',
+                              shape=(sum( [shp[0]*shp[1] for shp in self.meta['shape_list']] ),
+                                    128, 128),
+                              dtype=float)
+            
+            for k,v in self.meta.items(): # write metadata
+                    h['processed_data'].attrs[k] = v
+
+            for i,data in enumerate(tqdm(self.data_list)): # fill data
+                h['processed_data'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
+                    np.log(np.array(data.reshape((-1, 128,128))) + 1)    
+                    # da.log(data.reshape((-1, 128,128)) + 1) 
+
+        # scaling
+        print("fitting scaler...")
+        # sample = h['processed_data'][np.arange(0,self.__len__(),10000)]
+        self.scaler = StandardScaler()
+        self.scaler.fit( h['processed_data'][0:self.__len__():5000].reshape(-1,128*128) )
+
+    ## TODO: eels subtract background for each sample
+    ## TODO: figure out mask positions in the init function
+        # figure out mask
+        self.mask_positions=[]
+        
+        print('done')
+
+    def __len__(self):
+        return sum( [shp[0][0]*shp[0][1] for shp in self.meta['shape_list']] )
+    
+    # TODO: eels background subtration
+    def __getitem__(self,index):
+        with h5py.File(self.h5_name, 'r+') as h5:
+            img = h5['processed_data'][index]
+            img = img.reshape(-1,128*128)
+            img = self.scaler.transform(img)
+            img = img.reshape(128,128)
+            mean = img.mean()
+            std = img.std()
+            mask = abs(img)<mean+std*5
+
+            # return img
+            return index,img*mask
+
+    def open_h5(self):
+        return h5py.File(self.h5_name, 'r+')
+
+    def view_log(self,index):
+        with h5py.File(self.h5_name, 'r+') as h5:
+            return h5['processed_data'][index]
+
+    def subtract_background(self,img,**kwargs):
+        return img - gaussian_filter(img,**kwargs)
+    
+    def apply_scaler(self):
+        h = h5py.File(self.h5_name,'r+')
+        t,a,b,x,y = h['raw_data'].shape
+        data = h['processed'][:].T.reshape(x*y,-1)
+        print('standard scaling')
+        data = StandardScaler().fit_transform(data)
+        print('normalizing 0-1')
+        data -= data.min(axis=0)
+        data /= data.max(axis=0)
+        print('writing to h5')
+        h['processed'][:] = data.reshape(y,x,-1).T
+        h.close()
+        
+    def apply_mask(self,bbox=None,center=None,radius=None):
+        """apply a mask in the shape of a circle. 
+        Arguments can either include a square around the brightfield or the center and radius
+
+        Args:
+            square (tuple, optional): (x1,x2,y1,y2) of bounding box. Defaults to None.
+            center (tuple, optional): (x,y) indices of center of mask. Defaults to None.
+            radius (int, optional): radius of mask. Defaults to None.
+        """        
+        h = h5py.File(self.h5_name,'r+')
+        print('Masking')
+        for sample,i in enumerate(tqdm()):
+            h['processed'][i]=data*mask+(-mask+1)*h['processed'][i].mean()
+        h.close()
+
+    def apply_threshold(self,thresh):
+        h = h5py.File(self.h5_name,'r+')
+        args = np.argwhere(h['processed']>thresh)
+        h['processed'][args] = thresh
+        h.close()
+
     # # def preprocess(self,mask_center=False,crop=False,sub_bkg=False,thresh=False):
     # #     # mask_center
     # #     # try:
@@ -199,4 +364,3 @@ class STEM_Dataset(Dataset):
     # #         # self.processed=test
     # #     #     for i,j in list(zip(rr,cc)):
     # #     #             self.processed[:,:,:,i,j] = 0
-    # #     # # except: print('No mask')

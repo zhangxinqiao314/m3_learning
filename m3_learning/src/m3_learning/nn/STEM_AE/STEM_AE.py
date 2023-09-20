@@ -16,7 +16,9 @@ from viz.layout import find_nearest
 import time
 from datetime import date
 
-
+## TODO: add 1d version of all classes, with Attention
+## TODO: add make sure we can easily access rotations and run encoder/decoder separately
+## TODO: add
 
 import sys
 import os
@@ -81,7 +83,7 @@ class ConvAutoencoder():
         """function that complies the neural network model
         """
         # builds the encoder
-        self.encoder = Encoder(
+        self.encoder = Encoder2D(
             original_step_size=self.encoder_step_size,
             pooling_list=self.pooling_list,
             embedding_size=self.embedding_size,
@@ -90,7 +92,7 @@ class ConvAutoencoder():
         ).to(self.device)
 
         # builds the decoder
-        self.decoder = Decoder(
+        self.decoder = Decoder2D(
             original_step_size=self.decoder_step_size,
             upsampling_list=self.upsampling_list,
             embedding_size=self.embedding_size,
@@ -230,7 +232,6 @@ class ConvAutoencoder():
         if scheduler is not None:
             scheduler.step()
 
-    ## TODO: why unshuffler taking so long? (just use h100 instead of titan)
     def loss_function(self,
                       train_iterator,
                       coef=0,
@@ -269,45 +270,31 @@ class ConvAutoencoder():
 
             # update the gradients to zero
             self.optimizer.zero_grad()
-            # toc = time.time()
-            # print('setup', abs(tic-toc)) e-3
 
             if beta is None: embedding, predicted_x = self.autoencoder(x)
             else: embedding, sd, mn, predicted_x = self.autoencoder(x)
-            # tic = time.time()
-            # print('autoencoder total', abs(tic-toc)) #1.3 s
 
             reg_loss_1 = coef*torch.norm(embedding, ln_parm).to(self.device)/x.shape[0]
             if reg_loss_1 == 0: reg_loss_1 = 0.5
 
             contras_loss = con_l(embedding)
             maxi_loss = maxi_(embedding)
-            # toc = time.time()
-            # print('reg losses', abs(tic-toc)) e-05
 
             # reconstruction loss
             mask = (predicted_x!=0)
             loss = F.mse_loss(x, predicted_x, reduction='mean');
             loss = (loss*mask.float()).sum()
             loss /= mask.sum()
-            # tic = time.time()
-            # print('reconstruction losses', abs(tic-toc))
 
             loss = loss + reg_loss_1 + contras_loss - maxi_loss
 
             train_loss += loss.item()
-            # toc = time.time()
-            # print('Add losses', abs(tic-toc)) e-5
 
             # backward pass
             loss.backward()
-            # tic = time.time()
-            # print('backward', abs(tic-toc)) # 2.782796859741211
 
             # update the weights
             self.optimizer.step()
-            # toc = time.time()
-            # print('update', abs(tic-toc)) # e-2
             
             # fill embedding if the correct epoch
             if fill_embeddings:
@@ -532,8 +519,8 @@ class ConvAutoencoder():
         embedding = embedding.cpu().detach().numpy()
         return embedding
 
-
-class ConvBlock(nn.Module):
+    
+class ConvBlock1D(nn.Module):
     """Convolutional Block with 3 convolutional layers, 1 layer normalization layer with ReLU and ResNet
 
     Args:
@@ -548,14 +535,14 @@ class ConvBlock(nn.Module):
             n_step (int): Input shape of normalization layer
         """
 
-        super(ConvBlock, self).__init__()
-        self.cov1d_1 = nn.Conv2d(
+        super(ConvBlock2D, self).__init__()
+        self.cov1d_1 = nn.Conv1d(
             t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
-        self.cov1d_2 = nn.Conv2d(
+        self.cov1d_2 = nn.Conv1d(
             t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
-        self.cov1d_3 = nn.Conv2d(
+        self.cov1d_3 = nn.Conv1d(
             t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
         self.norm_3 = nn.LayerNorm(n_step)
@@ -582,7 +569,56 @@ class ConvBlock(nn.Module):
         return out
 
 
-class IdentityBlock(nn.Module):
+class ConvBlock2D(nn.Module):
+    """Convolutional Block with 3 convolutional layers, 1 layer normalization layer with ReLU and ResNet
+
+    Args:
+        nn (nn.Module): Torch module class
+    """
+
+    def __init__(self, t_size, n_step):
+        """Initializes the convolutional block
+
+        Args:
+            t_size (int): Size of the convolution kernel
+            n_step (int): Input shape of normalization layer
+        """
+
+        super(ConvBlock2D, self).__init__()
+        self.cov2d_1 = nn.Conv2d(
+            t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
+        )
+        self.cov2d_2 = nn.Conv2d(
+            t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
+        )
+        self.cov2d_3 = nn.Conv2d(
+            t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
+        )
+        self.norm_3 = nn.LayerNorm(n_step)
+        self.relu_4 = nn.ReLU()
+
+    def forward(self, x):
+        """Forward pass of the convolutional block
+
+        Args:
+            x (Tensor): Input tensor
+
+        Returns:
+            Tensor: output tensor
+        """
+
+        x_input = x
+        out = self.cov2d_1(x)
+        out = self.cov2d_2(out)
+        out = self.cov2d_3(out)
+        out = self.norm_3(out)
+        out = self.relu_4(out)
+        out = out.add(x_input)
+
+        return out
+    
+    
+class IdentityBlock1D(nn.Module):
 
     """Identity Block with 1 convolutional layers, 1 layer normalization layer with ReLU"""
 
@@ -594,8 +630,8 @@ class IdentityBlock(nn.Module):
             n_step (int): Input shape of normalization layer
         """
 
-        super(IdentityBlock, self).__init__()
-        self.cov1d_1 = nn.Conv2d(
+        super(IdentityBlock1D, self).__init__()
+        self.cov1d_1 = nn.Conv1d(
             t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
         self.norm_1 = nn.LayerNorm(n_step)
@@ -613,6 +649,43 @@ class IdentityBlock(nn.Module):
 
         x_input = x
         out = self.cov1d_1(x)
+        out = self.norm_1(out)
+        out = self.relu(out)
+
+        return out
+    
+    
+class IdentityBlock2D(nn.Module):
+
+    """Identity Block with 1 convolutional layers, 1 layer normalization layer with ReLU"""
+
+    def __init__(self, t_size, n_step):
+        """Initializes the identity block
+
+        Args:
+            t_size (int): Size of the convolution kernel
+            n_step (int): Input shape of normalization layer
+        """
+
+        super(IdentityBlock2D, self).__init__()
+        self.cov2d_1 = nn.Conv2d(
+            t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
+        )
+        self.norm_1 = nn.LayerNorm(n_step)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        """Forward pass of the identity block
+
+        Args:
+            x (Tensor): Input tensor
+
+        Returns:
+            Tensor: output tensor
+        """
+
+        x_input = x
+        out = self.cov2d_1(x)
         out = self.norm_1(out)
         out = self.relu(out)
 
@@ -725,7 +798,7 @@ class Affine_Transform(nn.Module):
         return scaler_shear, rotation, translation, mask_parameter
 
 
-class Encoder(nn.Module):
+class Encoder2D(nn.Module):
     """Encoder block
 
     Args:
@@ -742,7 +815,7 @@ class Encoder(nn.Module):
             conv_size (Int): the value of filters number goes to each block
         """
 
-        super(Encoder, self).__init__()
+        super(Encoder2D, self).__init__()
         self.device = device
         blocks = []
 
@@ -751,9 +824,9 @@ class Encoder(nn.Module):
 
         number_of_blocks = len(pooling_list)
 
-        blocks.append(ConvBlock(t_size=conv_size,
+        blocks.append(ConvBlock2D(t_size=conv_size,
                                 n_step=original_step_size))
-        blocks.append(IdentityBlock(
+        blocks.append(IdentityBlock2D(
             t_size=conv_size, n_step=original_step_size))
         blocks.append(nn.MaxPool2d(
             pooling_list[0], stride=pooling_list[0]))
@@ -763,10 +836,10 @@ class Encoder(nn.Module):
                 original_step_size[0] // pooling_list[i - 1],
                 original_step_size[1] // pooling_list[i - 1],
             ]
-            blocks.append(ConvBlock(t_size=conv_size,
+            blocks.append(ConvBlock2D(t_size=conv_size,
                                     n_step=original_step_size))
             blocks.append(
-                IdentityBlock(t_size=conv_size, n_step=original_step_size)
+                IdentityBlock2D(t_size=conv_size, n_step=original_step_size)
             )
             blocks.append(nn.MaxPool2d(
                 pooling_list[i], stride=pooling_list[i]))
@@ -819,7 +892,7 @@ class Encoder(nn.Module):
         return selection,scaler_shear, rotation, translation
 
 
-class Decoder(nn.Module):
+class Decoder2D(nn.Module):
     """Decoder class
 
     Args:
@@ -844,7 +917,7 @@ class Decoder(nn.Module):
             pooling_list (List): the list of parameter for each 2D MaxPool layer
         """
 
-        super(Decoder, self).__init__()
+        super(Decoder2D, self).__init__()
         self.input_size_0 = original_step_size[0]
         self.input_size_1 = original_step_size[1]
         self.dense = nn.Linear(
@@ -859,9 +932,9 @@ class Decoder(nn.Module):
 
         blocks = []
         number_of_blocks = len(upsampling_list)
-        blocks.append(ConvBlock(t_size=conv_size,
+        blocks.append(ConvBlock2D(t_size=conv_size,
                                 n_step=original_step_size))
-        blocks.append(IdentityBlock(
+        blocks.append(IdentityBlock2D(
             t_size=conv_size, n_step=original_step_size))
         for i in range(number_of_blocks):
             blocks.append(
@@ -875,10 +948,10 @@ class Decoder(nn.Module):
                 original_step_size[0] * upsampling_list[i],
                 original_step_size[1] * upsampling_list[i],
             ]
-            blocks.append(ConvBlock(t_size=conv_size,
+            blocks.append(ConvBlock2D(t_size=conv_size,
                                     n_step=original_step_size))
             blocks.append(
-                IdentityBlock(t_size=conv_size, n_step=original_step_size)
+                IdentityBlock2D(t_size=conv_size, n_step=original_step_size)
             )
 
         self.block_layer = nn.ModuleList(blocks)
