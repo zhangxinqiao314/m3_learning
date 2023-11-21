@@ -11,6 +11,9 @@ from sklearn.preprocessing import Normalizer,StandardScaler
 from tqdm import tqdm as tqdm
 import glob
 import torch
+from bisect import bisect_left,bisect_right
+import time
+from skimage.morphology import binary_dilation, binary_erosion,disk
 
 
 class STEM_Dataset(Dataset):
@@ -63,7 +66,7 @@ class STEM_Dataset(Dataset):
                 self.bad_files.append(path)
                 self.meta['path_list'].remove(path)
                 print('bad',path)
-        self.meta['sample_inds'].append(i)        
+                
         print(len(self.meta['shape_list']), 'valid samples')
 
         self.shape = self.__len__(),128,128
@@ -211,14 +214,6 @@ class STEM_EELS_Dataset(Dataset):
         eels_hl_list.sort(key=get_number)
         eels_hl_list.sort(key=get_particle)
         self.meta['path_list'] = list(zip(stem_path_list,eels_ll_list,eels_hl_list))
-        
-        # create/ open h5 file
-        if not os.path.exists(self.h5_name): 
-            h = h5py.File(self.h5_name,'w')
-            h.close()
-            h = h5py.File(self.h5_name,'r+')
-        else: 
-            h = h5py.File(self.h5_name,'r+')
 
         print('fetching metadata...')
         self.meta['particle_list'] = [] # names of particle 'folder(#)' TODO: make 2 digit counting number
@@ -230,14 +225,15 @@ class STEM_EELS_Dataset(Dataset):
         self.meta['sample_inds'] = [0]
 
         # go through data files and fill metadata
+        # TODO: why doesn't assert false work?
         for i,(dpath,lpath,hpath) in enumerate(tqdm(self.meta['path_list'])):
             try:
                 diff = hs.load(dpath, lazy=True)
                 ll = hs.load(lpath,lazy=True)
                 hl = hs.load(hpath,lazy=True)
-                
                 self.data_list.append((diff.data, ll.data, hl.data))
                 self.meta['particle_list'].append(f'AuCo({get_number(dpath):02d})')
+                # (real,diff), 
                 self.meta['shape_list'].append((diff.data.shape, ll.data.shape, hl.data.shape))
                 self.meta['particle_inds'].append(self.meta['particle_inds'][-1] + \
                                                     diff.data.shape[0]*diff.data.shape[1])
@@ -251,57 +247,127 @@ class STEM_EELS_Dataset(Dataset):
             except:
                 self.bad_files.append((dpath,lpath,hpath))
                 self.meta['path_list'].remove((dpath,lpath,hpath))
-                print('bad',dpath,lpath,hpath )
+                print('bad:')
+                print('\t',dpath)
+                print('\t',lpath)
+                print('\t',hpath)
+                
         print(len(self.meta['shape_list']), 'valid samples')
-
+        self.length = sum( [shp[0][0]*shp[0][1] for shp in self.meta['shape_list']])
         self.shape = self.__len__(),128,128
-        return
-        # create h5 dataset, fill metadata, and transfer data from dm4 files to h5
-        if overwrite or 'processed_data' not in h:
-            if 'processed_data' in h: del h['processed_data']
-            print('writing processed_data h5 dataset')
-            h.create_dataset('processed_data',
-                              shape=(sum( [shp[0]*shp[1] for shp in self.meta['shape_list']] ),
-                                    128, 128),
-                              dtype=float)
-            
-            for k,v in self.meta.items(): # write metadata
-                    h['processed_data'].attrs[k] = v
-
-            for i,data in enumerate(tqdm(self.data_list)): # fill data
-                h['processed_data'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
-                    np.log(np.array(data.reshape((-1, 128,128))) + 1)    
-                    # da.log(data.reshape((-1, 128,128)) + 1) 
-
-        # scaling
-        print("fitting scaler...")
-        # sample = h['processed_data'][np.arange(0,self.__len__(),10000)]
-        self.scaler = StandardScaler()
-        self.scaler.fit( h['processed_data'][0:self.__len__():5000].reshape(-1,128*128) )
-
-    ## TODO: eels subtract background for each sample
-    ## TODO: figure out mask positions in the init function
-        # figure out mask
-        self.mask_positions=[]
         
+        # create h5 dataset, fill metadata, and transfer data from dm4 files to h5
+        with h5py.File(self.h5_name,'a') as h:
+            if overwrite or 'processed_data' not in h:
+                if 'processed_data' in h: del h['processed_data']
+                print('writing processed_data h5 datasets')
+                
+                processed_group = h.create_group('processed_data')                
+                processed_group.create_dataset('diff', shape=(self.length,512, 512), dtype=float)                
+                processed_group.create_dataset('ll', shape=(self.length,1024), dtype=float)                
+                processed_group.create_dataset('hl', shape=(self.length,1024), dtype=float)
+                
+                for k,v in self.meta.items(): # write metadata
+                        if isinstance(v[0],tuple):
+                            h['processed_data/diff'].attrs[k] = [tup[0] for tup in v]
+                            h['processed_data/ll'].attrs[k] = [tup[1] for tup in v]
+                            h['processed_data/hl'].attrs[k] = [tup[2] for tup in v]
+                        else:
+                            h['processed_data/diff'].attrs[k] = v
+                            h['processed_data/ll'].attrs[k] = v
+                            h['processed_data/hl'].attrs[k] = v
+                        
+
+                for i,data in enumerate(tqdm(self.data_list)): # fill data
+                    
+                    h['processed_data/diff'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
+                        np.log(np.array(data[0].reshape((-1, 512,512))) + 1)    
+                        
+                    h['processed_data/ll'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
+                        np.array(data[1].reshape((-1, 1024)))
+                          
+                    h['processed_data/hl'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
+                        np.array(data[2].reshape((-1, 1024)))
+
+            # scaling
+            print("fitting scalers...")
+            # sample = h['processed_data'][np.arange(0,self.__len__(),10000)]
+            self.scalers = {'diff': StandardScaler(),
+                            'll': StandardScaler(),
+                            'hl': StandardScaler() }
+            tic = time.time()
+            self.scalers['diff'].fit( h['processed_data/diff'][0:self.length-1:100].reshape(-1,512*512) )
+            toc = time.time()
+            print(f'Diffraction finished: {abs(tic-toc)} s')
+            
+            self.scalers['ll'].fit( h['processed_data/ll'][:])
+            tic = time.time()
+            print(f'Low Loss finished {abs(tic-toc)} s')
+            
+            self.scalers['hl'].fit( h['processed_data/hl'][:])
+            toc=time.time()
+            print(f'High Loss finished {abs(tic-toc)} s') 
+
+            ## TODO: figure out mask positions in the init function
+            print('finding brightfield indices...')
+            # figure out mask
+            self.BF_mask=[]
+            for i in tqdm(range(len(self.data_list))):
+                start = self.meta['particle_inds'][i]
+                stop = self.meta['particle_inds'][i+1]
+                img = h['processed_data/diff'][start:stop:50].mean(0)
+                thresh = img.mean()+img.std()*30
+                inds = np.argwhere(img>thresh).T
+                mask = np.zeros(img.shape)
+                mask[inds[0],inds[1]]=1
+                mask = binary_dilation(mask,footprint=disk(5))
+                mask = binary_erosion(mask,footprint=disk(2))
+                mask = binary_dilation(mask,footprint=disk(8))
+                mask = 1.-mask
+                self.BF_mask.append(mask)
+
+            ## TODO: eels subtract background for each sample
+            print('finding High Loss background spectrum...')
+            # figure out mask
+            self.HL_bkgs=[]
+            for i in tqdm(range(len(self.data_list))):
+                start = self.meta['particle_inds'][i]
+                stop = self.meta['particle_inds'][i+1]
+                spec = h['processed_data/hl'][start:stop].mean(0)
+                [a,b,c] = np.polyfit(np.arange(1024),spec,2)
+                x = np.linspace(0,1023,1024)
+                self.HL_bkgs.append(a*x**2 + b*x + c) 
+                    
         print('done')
 
     def __len__(self):
-        return sum( [shp[0][0]*shp[0][1] for shp in self.meta['shape_list']] )
+        return self.length
     
     # TODO: eels background subtration
     def __getitem__(self,index):
         with h5py.File(self.h5_name, 'r+') as h5:
-            img = h5['processed_data'][index]
-            img = img.reshape(-1,128*128)
-            img = self.scaler.transform(img)
-            img = img.reshape(128,128)
-            mean = img.mean()
-            std = img.std()
-            mask = abs(img)<mean+std*5
+            i = bisect_right(self.meta['particle_inds'],index)-1
+            
+            img = h5['processed_data/diff'][index]
+            img = img.reshape(-1,512*512)
+            img = self.scalers['diff'].transform(img)
+            img = img.reshape(512,512)
+            
+            ll = h5['processed_data/ll'][index].reshape(1,1024)
+            ll = self.scalers['ll'].transform(ll).squeeze()
+
+            hl = h5['processed_data/hl'][index]#-self.HL_bkgs[i]
+            hl = self.scalers['hl'].transform(hl.reshape(1,1024)).squeeze()
+            
+            return index,img*self.BF_mask[i],ll,hl
+            
+            
+            # mean = img.mean()
+            # std = img.std()
+            # mask = abs(img)<mean+std*5
 
             # return img
-            return index,img*mask
+            # return index,img*mask
 
     def open_h5(self):
         return h5py.File(self.h5_name, 'r+')
