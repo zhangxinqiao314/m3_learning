@@ -311,6 +311,7 @@ class STEM_EELS_Dataset(Dataset):
             ## TODO: figure out mask positions in the init function
             print('finding brightfield indices...')
             # figure out mask
+            self.BF_inds = []
             self.BF_mask=[]
             for i in tqdm(range(len(self.data_list))):
                 start = self.meta['particle_inds'][i]
@@ -318,6 +319,8 @@ class STEM_EELS_Dataset(Dataset):
                 img = h['processed_data/diff'][start:stop:50].mean(0)
                 thresh = img.mean()+img.std()*30
                 inds = np.argwhere(img>thresh).T
+                self.BF_inds.append(inds)
+                
                 mask = np.zeros(img.shape)
                 mask[inds[0],inds[1]]=1
                 mask = binary_dilation(mask,footprint=disk(5))
@@ -344,6 +347,7 @@ class STEM_EELS_Dataset(Dataset):
         return self.length
     
     # TODO: eels background subtration
+    ## TODO: fancy indexing methods
     def __getitem__(self,index):
         with h5py.File(self.h5_name, 'r+') as h5:
             i = bisect_right(self.meta['particle_inds'],index)-1
