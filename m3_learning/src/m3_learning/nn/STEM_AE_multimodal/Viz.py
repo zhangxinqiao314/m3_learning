@@ -93,59 +93,95 @@ class Viz:
             shape_ (list, optional): shape of the original data structure. Defaults to [265, 256, 256, 256].
         """
         # ind = dataset.meta['particle_list'].where(particle)
-        h=dataset.open_h5()
-        data = h['processed_data'][dataset.meta['particle_inds'][ind]:
-                                   dataset.meta['particle_inds'][ind+1]]
-        
-        # sets the number of figures based on how many plots are shown
-        fig_num = 1
-        if bright_field_:
-            fig_num += 1
-        if dark_field_:
-            fig_num += 1
+        with h5py.File(self.h5_name,'a') as h:
+            diff = h['processed_data/diff'][dataset.meta['particle_inds'][ind]:
+                                    dataset.meta['particle_inds'][ind+1]]
+            
+            ll = h['processed_data/ll'][dataset.meta['particle_inds'][ind]:
+                                    dataset.meta['particle_inds'][ind+1]]
+            
+            hl = h['processed_data/hl'][dataset.meta['particle_inds'][ind]:
+                                    dataset.meta['particle_inds'][ind+1]]
+            
+            # sets the number of figures based on how many plots are shown
+            fig_num = 1
+            if bright_field_:
+                fig_num += 1
+            if dark_field_:
+                fig_num += 1
 
-        # creates the figure
-        fig, axs = layout_fig(fig_num, fig_num, figsize=(
-                                1.5*fig_num, 1.25))
-        a=0
-        # plots the raw STEM data
-        imagemap(axs[a], np.mean(data, axis=0), divider_=False)
-        a+=1
-
-        # plots the virtual bright field image
-        if bright_field_ is not None:
-            bright_field = data[:,dataset.BF_inds[ind][0],
-                                  dataset.BF_inds[ind][1]]
-            bright_field = bright_field.mean(axis=1)
-            bright_field = bright_field.reshape(dataset.meta['shape_list'][ind][0],
-                                                dataset.meta['shape_list'][ind][1])
-            imagemap(axs[a], bright_field, divider_=False)
+            # Make grid
+            fig = plt.figure(figsize=(9,9))
+            gs = fig.add_gridspec(3, 3)
+            axs = [] ##TODO: make plots flexible for diff number of bf/df images
+            axs.append( fig.add_subplot(gs[0,0]) ) # particle 0
+            axs.append( fig.add_subplot(gs[0,1]) ) # bf 1
+            axs.append( fig.add_subplot(gs[0,2]) ) # df 2
+            axs.append( fig.add_subplot(gs[1,:]) ) # ll 3
+            axs.append( fig.add_subplot(gs[2,:]) ) # hl 4
+            
+            # # creates the figure
+            # fig, axs = layout_fig(fig_num, fig_num, figsize=(
+            #                         1.5*fig_num, 1.25))
+            a=0
+            # plots the raw STEM data
+            imagemap(axs[a], np.mean(data, axis=0), divider_=False)
             a+=1
 
-        # plots the virtual dark field image
-        if dark_field_ is not None:
-            dark_field = data
-            dark_field[:,dataset.BF_inds[ind][0],
-                         dataset.BF_inds[ind][1]] = 0
-            
-            dark_field = np.mean(dark_field,axis=(1,2))
-            dark_field.reshape(dataset.meta['shape_list'][ind][0],
-                               dataset.meta['shape_list'][ind][1])
-            imagemap(axs[a], dark_field, divider_=False)
+            # plots the virtual bright field image
+            if bright_field_ is not None:
+                bright_field = diff[:,dataset.BF_inds[ind][0],
+                                      dataset.BF_inds[ind][1]]
+                bright_field = bright_field.mean(axis=1)
+                bright_field = bright_field.reshape(dataset.meta['shape_list'][ind][0][0],
+                                                    dataset.meta['shape_list'][ind][0][1])
+                imagemap(axs[a], bright_field, divider_=False)
+                a+=1
 
-        # adds labels to the figure
-        if self.labelfigs_:
-            for j, ax in enumerate(axs):
-                labelfigs(ax, j)
+            # plots the virtual dark field image
+            if dark_field_ is not None:
+                dark_field = diff
+                dark_field[:,dataset.BF_inds[ind][0],
+                            dataset.BF_inds[ind][1]] = 0
+                
+                dark_field = np.mean(dark_field,axis=(1,2))
+                # dark_field.reshape(dataset.meta['shape_list'][ind][0],
+                #                 dataset.meta['shape_list'][ind][1])
+                imagemap(axs[a], dark_field, divider_=False)
+                
+            # plots the low loss spectrum
+            if low_loss_ is not None:
+                dark_field = np.mean(dark_field,axis=(1,2))
+                # dark_field.reshape(dataset.meta['shape_list'][ind][0],
+                #                 dataset.meta['shape_list'][ind][1])
+                imagemap(axs[a], dark_field, divider_=False)
+                
+            # plots the high loss spectrum
+            if dark_field_ is not None:
+                dark_field = diff
+                dark_field[:,dataset.BF_inds[ind][0],
+                            dataset.BF_inds[ind][1]] = 0
+                
+                dark_field = np.mean(dark_field,axis=(1,2))
+                # dark_field.reshape(dataset.meta['shape_list'][ind][0],
+                #                 dataset.meta['shape_list'][ind][1])
+                imagemap(axs[a], dark_field, divider_=False)
+                
+            # plots the low loss spectrum
 
-        if scalebar_:
-            # adds a scalebar to the figure
-            add_scalebar(axs[-1], self.scalebar_)
+            # adds labels to the figure
+            if self.labelfigs_:
+                for j, ax in enumerate(axs):
+                    labelfigs(ax, j)
 
-        make_folder(f'{self.printer.basepath}bf_df/')
-        # saves the figure
-        if self.printer is not None:
-            self.printer.savefig(fig, f'bf_df/{dataset.meta["particle_list"][ind]}', tight_layout=False)
+            if scalebar_:
+                # adds a scalebar to the figure
+                add_scalebar(axs[-1], self.scalebar_)
+
+            make_folder(f'{self.printer.basepath}bf_df/')
+            # saves the figure
+            if self.printer is not None:
+                self.printer.savefig(fig, f'bf_df/{dataset.meta["particle_list"][ind]}', tight_layout=False)
 
 
     def find_nearest(self, array, value, averaging_number):
