@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
-from util.file_IO import make_folder
-from viz.layout import labelfigs
+from ..util.file_IO import make_folder
+from ..viz.layout import labelfigs
 
 
 class printer:

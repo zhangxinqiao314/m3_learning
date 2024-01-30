@@ -1,4 +1,4 @@
-from viz.layout import layout_fig, imagemap, labelfigs, add_scalebar, find_nearest
+from ..viz.layout import layout_fig, imagemap, labelfigs, add_scalebar, find_nearest
 import matplotlib.pyplot as plt
 import numpy as np
 import torch

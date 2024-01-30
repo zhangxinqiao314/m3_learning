@@ -3,6 +3,8 @@ import hyperspy.api as hs
 import h5py
 from skimage.draw import disk
 import dask.array as da
+from dask.diagnostics import ProgressBar
+
 import pyNSID
 import os
 from scipy.ndimage import gaussian_filter
@@ -14,6 +16,9 @@ import torch
 from bisect import bisect_left,bisect_right
 import time
 from skimage.morphology import binary_dilation, binary_erosion,disk
+from pdb import set_trace as bp
+import matplotlib.pyplot as plt
+
 
 '''From carolin:
 Cropping below zero is fine in principle. In practice, I would crop below -20eV since peaks can broaden and shift on the energy axis a little bit. The maximum of the zero loss peak (the really big sharp one) is supposed to be at zero.
@@ -200,7 +205,9 @@ class STEM_EELS_Dataset(Dataset):
     """
     def __init__(self,save_path,
                  EELS_roi={'LL':[], 'HL': []},
-                 overwrite=False,**kwargs):
+                 overwrite_diff=False,
+                 overwrite_eels=False,
+                 **kwargs):
         """Initialization of the class.
 
         Args:
@@ -275,84 +282,109 @@ class STEM_EELS_Dataset(Dataset):
         
         
         # get spectral data cropping region
-        print('getting spectral axis labels...')
+        print('\ngetting spectral axis labels...')
         x = np.arange(1024)
         llx,hlx = self.get_raw_spectral_axis(1)
-        
+        self.raw_x_labels = np.stack([llx,hlx],axis=1)
         l = []
         maxlen=0
         for eV_range in EELS_roi['LL']:
             i0 = bisect_left(llx,eV_range[0])
             i1 = bisect_right(llx,eV_range[1])-1
-            l.append((llx[i0],llx[i1],0))
+            l.append((i0,i1,0))
             if i1-i0>maxlen: 
                 maxlen = i1-i0
         for eV_range in EELS_roi['HL']:
             i0 = bisect_left(hlx,eV_range[0])
             i1 = bisect_right(hlx,eV_range[1])-1
-            l.append((hlx[i0],hlx[i1],1))
+            l.append((i0,i1,1))
             if i1-i0>maxlen: 
                 maxlen = i1-i0
-        
+
         self.ll_i0 = bisect_left(llx,0)
         self.meta['eels_axis_labels'] = [(i[0], i[0]+maxlen, i[2]) for i in l] # make sure they are all the same length
         self.spec_len = self.meta['eels_axis_labels'][0][1] - self.meta['eels_axis_labels'][0][0] +1
         self.eels_chs = len(self.meta['eels_axis_labels'])
         
         self.shape = ( (self.__len__(),512,512), (self.__len__(),self.spec_len) )
-        
+
         # create h5 dataset, fill metadata, and transfer data from dm4 files to h5, and do 0 alignment
         with h5py.File(self.h5_name,'a') as h:
-            if overwrite or 'processed_data' not in h:
-                if 'processed_data' in h: del h['processed_data']
-                print('writing processed_data h5 datasets')
+            if 'processed_data' not in h:
+                print('\nwriting processed_data h5 datasets')
+                overwrite_eels = False
+                overwrite_diff = False
+                h.create_group('processed_data')       
                 
-                processed_group = h.create_group('processed_data')                
-                processed_group.create_dataset('diff', shape=(self.length,1,512, 512), dtype=float)
-                processed_group.create_dataset('eels', shape=(self.length,self.eels_chs,self.spec_len), dtype=float)
-
                 for k,v in self.meta.items(): # write metadata
                         if isinstance(v[0],tuple):
-                            h['processed_data/diff'].attrs[k] = [tup[0] for tup in v]
+                            h['processed_data'].attrs[k] = [tup[0] for tup in v]
                         else:
-                            h['processed_data/diff'].attrs[k] = v
-                        
-
-                # fill data
+                            h['processed_data'].attrs[k] = v         
+                                   
+            if overwrite_eels:
+                print('\nwriting eels datasets')
+                h['processed_data'].create_dataset('eels', shape=(self.length,self.eels_chs,self.spec_len), dtype=float)
+                
                 for i,data in enumerate(tqdm(self.data_list)): 
-                    h['processed_data/diff'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
-                        np.log(np.array(data[0].reshape((-1,1,512,512))) + 1)
-                    s0,s1,_ = self.meta['shape_list'][1]    
                     # find 0 peak shift
-                    shift_0 = data.data.argmax(axis=2) - self.ll_i0
-                    shift_0 = shift_0.reshape()
-                    for ind, spec_ind in self.meta['eels_axis_labels']:
-                        istart = shift_0 + spec_ind[0]
-                        iend = shift_0 + spec_ind[1]
-                        for x in range(s0):
-                            for y in range(s1):
-                                start_index = istart[x, y]
-                                end_index = iend[x, y]
-                                flattened_index = np.ravel_multi_index((x, y), (s0, s1))
-                                h['processed_data/eels'][self.meta['particle_inds'][i] + flattened_index,
-                                                        ind] = data[spec_ind[2]][x,y,start_index:end_index]
+                    shift_0 = data[1].argmax(axis=2).flatten() - self.ll_i0
                     
-            print("fitting scalers...") # TODO: should i do the scalars by channel?
-            # sample = h['processed_data'][np.arange(0,self.__len__(),10000)]
+                    for ind, spec_ind in enumerate(self.meta['eels_axis_labels']):
+                        dset_slice = h['processed_data/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind]
+                        istart = shift_0.rechunk(chunks=(1024,1)) + spec_ind[0]
+                        data_ = data[spec_ind[2]+1].reshape((-1,1024)).rechunk(chunks=(1024,1024,))
+                        
+                        # function to slice data according to peak
+                        def slice_data(dat, start, block_info=None, investigate=False):
+                            # print(block_info)
+                            block_shape = dat.shape
+                            
+                            # Check if the block is empty (should not be the case)
+                            if dat.size == 0 or start.size == 0:
+                                raise ValueError("Received an empty block")
+                            
+                            # Initialize an empty array for the result
+                            new_chunk = np.empty((block_shape[0], self.spec_len))
+                            for i in range(block_shape[0]):
+                                # Extract the start index for this row
+                                start_idx = start[i]
+                                # Perform the slicing
+                                sliced = dat[i, start_idx:start_idx + self.spec_len]
+                                new_chunk[i] = np.log(sliced+1)#.rechunk(block_shape[0],self.spec_len)
+                            return new_chunk 
+                        result = da.map_blocks(slice_data, data_, istart, 
+                                               dtype=data_.dtype,
+                                               drop_axis = [1],
+                                               new_axis=[1], 
+                                               chunks = (1024,self.spec_len),
+                                               )     
+                        da.store(result, dset_slice)
+                        h['processed_data/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind] = dset_slice
+                        h.flush()
+                                
+                                
+            if overwrite_diff:
+                print('\nwriting diff datasets')
+                h['processed_data'].create_dataset('diff', shape=(self.length,1,512, 512), dtype=float)
+                for i,data_ in enumerate(tqdm(self.data_list)): 
+                    # 4%|▎         | 1/27 [00:18<08:10, 18.85s/it]
+                    h['processed_data/diff'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
+                        np.log(np.array(data_[0].reshape((-1,1,512,512))) + 1)
+                    h.flush()
+                    
+                  
+            print('fitting scalers...') # TODO: make custom class to fit scalars nd-wise
             self.scalers = {'diff': StandardScaler(),
-                            'eels': StandardScaler() }
+                            'eels': [StandardScaler() for sc in range(self.eels_chs)] }
             tic = time.time()
             self.scalers['diff'].fit( h['processed_data/diff'][0:self.length-1:100].reshape(-1,512*512) )
             toc = time.time()
-            print(f'Diffraction finished: {abs(tic-toc)} s')
+            print(f'\tDiffraction finished: {abs(tic-toc)} s')
             
-            self.scalers['ll'].fit( h['processed_data/eels'][:,0])
+            [scaler.fit( h['processed_data/eels'][0:self.length-1:25, 0]) for scaler in self.scalers['eels']]
             tic = time.time()
-            print(f'Low Loss finished {abs(tic-toc)} s')
-            
-            self.scalers['hl'].fit( h['processed_data/eels'][:,1])
-            toc=time.time()
-            print(f'High Loss finished {abs(tic-toc)} s') 
+            print(f'\tEELS finished {abs(tic-toc)} s')
 
             ## figure out mask positions
             print('finding brightfield indices...')
@@ -361,7 +393,7 @@ class STEM_EELS_Dataset(Dataset):
             for i in tqdm(range(len(self.data_list))):
                 start = self.meta['particle_inds'][i]
                 stop = self.meta['particle_inds'][i+1]
-                img = h['processed_data/diff'][start:stop:50].mean(0)
+                img = h['processed_data/diff'][start:stop:50,0].mean(0)
                 thresh = img.mean()+img.std()*30
                 inds = np.argwhere(img>thresh).T
                 self.BF_inds.append(inds)
@@ -374,42 +406,45 @@ class STEM_EELS_Dataset(Dataset):
                 mask = 1.-mask
                 self.BF_mask.append(mask)
 
+
             ## find eels background for each sample
-            # TODO: find background in regions of interest?
             print('finding High Loss background spectrum...')
-            self.HL_bkgs=[]
+            bkgs=[]
             for i in tqdm(range(len(self.meta['particle_list']))):
                 start = self.meta['particle_inds'][i]
                 stop = self.meta['particle_inds'][i+1]
-                spec = h['processed_data/hl'][start:stop].mean(0)
-                [a,b,c] = np.polyfit(np.arange(self.spec_len),spec,2)
-                x = np.linspace(0, self.spec_len-1, self.spec_len)
-                self.HL_bkgs.append(a*x**2 + b*x + c) 
-                    
+                ind_bkgs = []
+                for ind, spec_ind in enumerate(self.meta['eels_axis_labels']):
+                    spec = h['processed_data/eels'][start:stop,ind].mean(0)
+                    [a,b,c] = np.polyfit(np.arange(self.spec_len),spec,2)
+                    x = np.linspace(0, self.spec_len-1, self.spec_len) # TODO: should I make the x-axis regular range or according to eels scale?
+                    ind_bkgs.append(a*x**2 + b*x + c) 
+                bkgs.append(ind_bkgs) 
+            self.bkgs = bkgs # TODO: should I make this into an array?
+            
         print('done')
 
     def __len__(self):
         return self.length
     
-    # TODO: grab eels data from regions of interest
     # TODO: eels background subtration
     ## TODO: fancy indexing methods
     def __getitem__(self,index):
         with h5py.File(self.h5_name, 'r+') as h5:
+            # which particle are we on
             i = bisect_right(self.meta['particle_inds'],index)-1
             
             img = h5['processed_data/diff'][index]
             img = img.reshape(-1,512*512)
             img = self.scalers['diff'].transform(img)
             img = img.reshape(512,512)
+            # TODO: dask implementation? only if rly slow
+            eels_ = h5['processed_data/eels'][index] # shape (num_ch, spec_len)
             
-            ll = h5['processed_data/ll'][index].reshape(1,self.spec_len)
-            ll = self.scalers['ll'].transform(ll).squeeze()
-
-            hl = h5['processed_data/hl'][index] - self.HL_bkgs[i]
-            hl = self.scalers['hl'].transform(hl.reshape(1,self.spec_len)).squeeze()
+            eels = [self.scalers['eels'][ch].transform(eels_[ch].reshape(1,-1)).squeeze() - self.bkgs[i][ch] \
+                    for ch in range(self.eels_chs)]
             
-            return index,img*self.BF_mask[i],ll,hl
+            return index,img*self.BF_mask[i], eels # TODO: does this need to be returned as array?
         
     def get_raw_spectral_axis(self,ind=0):
         x = np.arange(1024)
@@ -436,4 +471,37 @@ class STEM_EELS_Dataset(Dataset):
         return x*sh[0]+y
     
     
-  
+# class NDStandardScaler(TransformerMixin):
+#     def __init__(self, **kwargs):
+#         self._scaler = StandardScaler(copy=True, **kwargs)
+#         self._orig_shape = None
+
+#     def fit(self, X, **kwargs):
+#         X = np.array(X)
+#         # Save the original shape to reshape the flattened X later
+#         # back to its original shape
+#         if len(X.shape) > 1:
+#             self._orig_shape = X.shape[1:]
+#         X = self._flatten(X)
+#         self._scaler.fit(X, **kwargs)
+#         return self
+
+#     def transform(self, X, **kwargs):
+#         X = np.array(X)
+#         X = self._flatten(X)
+#         X = self._scaler.transform(X, **kwargs)
+#         X = self._reshape(X)
+#         return X
+
+#     def _flatten(self, X):
+#         # Reshape X to <= 2 dimensions
+#         if len(X.shape) > 2:
+#             n_dims = np.prod(self._orig_shape)
+#             X = X.reshape(-1, n_dims)
+#         return X
+
+#     def _reshape(self, X):
+#         # Reshape X back to it's original shape
+#         if len(X.shape) >= 2:
+#             X = X.reshape(-1, *self._orig_shape)
+#         return X

@@ -1,13 +1,13 @@
-from util.file_IO import make_folder
-from viz.layout import layout_fig
+from m3_learning.util.file_IO import make_folder
+from m3_learning.viz.layout import layout_fig
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from viz.layout import layout_fig, imagemap, labelfigs, find_nearest, add_scalebar
+from m3_learning.viz.layout import layout_fig, imagemap, labelfigs, find_nearest, add_scalebar
 from os.path import join as pjoin
-from viz.nn import embeddings as embeddings_
-from viz.nn import affines as affines_
+from m3_learning.viz.nn import embeddings as embeddings_
+from m3_learning.viz.nn import affines as affines_
 import glob
 import os
 
