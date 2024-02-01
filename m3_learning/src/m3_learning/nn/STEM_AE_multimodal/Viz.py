@@ -11,7 +11,8 @@ from m3_learning.viz.nn import affines as affines_
 import glob
 import os
 
-class Viz:
+## TODO: get original Viz in here too
+class Viz_Multimodal:
 
     """Visualization class for the STEM_AE class
     """

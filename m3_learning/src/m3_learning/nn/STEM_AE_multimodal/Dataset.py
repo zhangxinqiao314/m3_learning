@@ -306,7 +306,7 @@ class STEM_EELS_Dataset(Dataset):
         self.spec_len = self.meta['eels_axis_labels'][0][1] - self.meta['eels_axis_labels'][0][0] +1
         self.eels_chs = len(self.meta['eels_axis_labels'])
         
-        self.shape = ( (self.__len__(),512,512), (self.__len__(),self.spec_len) )
+        self.shape = ( (self.__len__(),1,512,512), (self.__len__(),self.eels_chs,self.spec_len) )
 
         # create h5 dataset, fill metadata, and transfer data from dm4 files to h5, and do 0 alignment
         with h5py.File(self.h5_name,'a') as h:
@@ -364,7 +364,7 @@ class STEM_EELS_Dataset(Dataset):
                         h.flush()
                                 
                                 
-            if overwrite_diff:
+            if overwrite_diff: # TODO: diff.reshape(-1,512*512)?
                 print('\nwriting diff datasets')
                 h['processed_data'].create_dataset('diff', shape=(self.length,1,512, 512), dtype=float)
                 for i,data_ in enumerate(tqdm(self.data_list)): 
@@ -434,17 +434,17 @@ class STEM_EELS_Dataset(Dataset):
             # which particle are we on
             i = bisect_right(self.meta['particle_inds'],index)-1
             
-            img = h5['processed_data/diff'][index]
-            img = img.reshape(-1,512*512)
-            img = self.scalers['diff'].transform(img)
-            img = img.reshape(512,512)
+            diff = h5['processed_data/diff'][index]
+            diff = diff.reshape(-1,512*512)
+            diff = self.scalers['diff'].transform(diff)
+            diff = diff.reshape(1,512,512)
+            
             # TODO: dask implementation? only if rly slow
             eels_ = h5['processed_data/eels'][index] # shape (num_ch, spec_len)
+            eels = np.array([self.scalers['eels'][ch].transform(eels_[ch].reshape(1,-1)).squeeze() - self.bkgs[i][ch] \
+                    for ch in range(self.eels_chs)])
             
-            eels = [self.scalers['eels'][ch].transform(eels_[ch].reshape(1,-1)).squeeze() - self.bkgs[i][ch] \
-                    for ch in range(self.eels_chs)]
-            
-            return index,img*self.BF_mask[i], eels # TODO: does this need to be returned as array?
+            return index, diff*self.BF_mask[i], eels # TODO: does this need to be returned as array?
         
     def get_raw_spectral_axis(self,ind=0):
         x = np.arange(1024)

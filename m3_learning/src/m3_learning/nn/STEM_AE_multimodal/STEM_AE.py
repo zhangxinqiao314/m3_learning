@@ -541,7 +541,8 @@ class ConvAutoencoder_Multimodal():
                  conv_size_1D,
                  conv_size_2D,
                  device,
-                 checkpoint = None,
+                 attn_heads,
+                 checkpoint = '',
                  learning_rate=3e-5,
                  emb_h5_path = './Combined_all_samples/embeddings.h5',
                  gen_h5_path = './Combined_all_samples/generated.h5',
@@ -580,6 +581,7 @@ class ConvAutoencoder_Multimodal():
         self.channels_1D = in_channels
         self.device = device
         self.learning_rate = learning_rate
+        self.attn_heads = attn_heads
 
         self.checkpoint = checkpoint
         # self.train = train
@@ -607,8 +609,9 @@ class ConvAutoencoder_Multimodal():
             pooling_list=self.pooling_list_1D,
             embedding_size=self.embedding_size_1D,
             conv_size=self.conv_size_1D,
-            in_channels=self.in_channels,
-            device=self.device
+            in_channels=self.channels_1D,
+            device=self.device,
+            attn_heads=self.attn_heads,
         ).to(self.device)
 
         # TODO: builds the 2d encoder
@@ -617,7 +620,7 @@ class ConvAutoencoder_Multimodal():
             pooling_list=self.pooling_list_2D,
             embedding_size=self.embedding_size_2D,
             conv_size=self.conv_size_2D,
-            device=self.device
+            device=self.device,
         ).to(self.device)
 
         # TODO: builds the 1d decoder
@@ -626,8 +629,8 @@ class ConvAutoencoder_Multimodal():
             upsampling_list=self.upsampling_list_1D,
             embedding_size=self.stacked_embedding_size,
             conv_size=self.conv_size_1D,
-            out_channels=self.in_channels,
-            pooling_list=self.pooling_list_1D,
+            out_channels=self.channels_1D,
+            attn_heads=self.attn_heads,
         ).to(self.device)
 
         # TODO: builds the 2d decoder
@@ -636,7 +639,6 @@ class ConvAutoencoder_Multimodal():
             upsampling_list=self.upsampling_list_2D,
             embedding_size=self.stacked_embedding_size,
             conv_size=self.conv_size_2D,
-            pooling_list=self.pooling_list_2D,
         ).to(self.device)
 
 
@@ -644,8 +646,7 @@ class ConvAutoencoder_Multimodal():
         self.autoencoder = AutoEncoder(
             self.encoder_1D, self.encoder_2D, 
             self.decoder_1D, self.decoder_2D,
-            self.embedding_size_1D, self.embedding_size_2D,
-            device=self.device).to(self.device)
+            self.device).to(self.device)
 
         # sets the optimizers
         self.optimizer = optim.Adam(
@@ -656,7 +657,6 @@ class ConvAutoencoder_Multimodal():
         self.autoencoder.type(torch.float32)
 
     ## TODO: implement embedding calculation/unshuffler
-    ## TODO: make sure eels roi in dset getitem works
     def Train(self,
               data,
               max_learning_rate=1e-4,
@@ -723,6 +723,7 @@ class ConvAutoencoder_Multimodal():
 
         # training loop
         for epoch in range(self.start_epoch, N_EPOCHS):
+            
             fill_embeddings = False
             if epoch % save_emb_every ==0: # tell loss function to give embedding every however many epochs
                 print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
@@ -759,7 +760,7 @@ class ConvAutoencoder_Multimodal():
         if epoch%save_emb_every==0:
             h = self.embedding.file
             check = file_path.split('/')[-1][:-4]
-            h[f'embedding_{check}'] = h[f'embedding_temp']
+            h[f'embedding_{check}'] = h[f'embedding_temp'] # combined embedding
             h[f'scaleshear_{check}'] = h[f'scaleshear_temp']
             h[f'rotation_{check}'] = h[f'rotation_temp'] 
             h[f'translation_{check}'] = h[f'translation_temp']
@@ -771,6 +772,7 @@ class ConvAutoencoder_Multimodal():
             del h[f'scaleshear_temp']          
             del h[f'rotation_temp']          
             del h[f'translation_temp']
+            h.flush()
                         
         if scheduler is not None:
             scheduler.step()
@@ -803,33 +805,35 @@ class ConvAutoencoder_Multimodal():
         train_loss = 0
         con_l = ContrastiveLoss(coef1).to(self.device)
         
-        for idx,x in tqdm(train_iterator, leave=True, total=len(train_iterator)):
+        for idx,diff,spec in tqdm(train_iterator, leave=True, total=len(train_iterator)):
             # tic = time.time()
             sorted, indices = torch.sort(idx)
             sorted = sorted.detach().numpy()
 
-            x = x.to(self.device, dtype=torch.float)
-            maxi_ = DivergenceLoss(x.shape[0], coef2).to(self.device)
+            diff = diff.to(self.device, dtype=torch.float)
+            spec = spec.to(self.device, dtype=torch.float)
+            maxi_ = DivergenceLoss(diff.shape[0], coef2).to(self.device) # based on batchsize
 
             # update the gradients to zero
             self.optimizer.zero_grad()
 
-            if beta is None: embedding, predicted_x = self.autoencoder(x)
-            else: embedding, sd, mn, predicted_x = self.autoencoder(x)
+            if beta is None: embedding, predicted_1D, predicted_2D = self.autoencoder((diff, spec))
+            else: embedding, sd, mn, predicted_1D, predicted_2D = self.autoencoder((diff, spec))
 
-            reg_loss_1 = coef*torch.norm(embedding, ln_parm).to(self.device)/x.shape[0]
+            reg_loss_1 = coef*torch.norm(embedding, ln_parm).to(self.device)/diff.shape[0]
             if reg_loss_1 == 0: reg_loss_1 = 0.5
 
             contras_loss = con_l(embedding)
             maxi_loss = maxi_(embedding)
 
             # reconstruction loss
-            mask = (predicted_x!=0)
-            loss = F.mse_loss(x, predicted_x, reduction='mean');
-            loss = (loss*mask.float()).sum()
-            loss /= mask.sum()
+            mask = (predicted_2D!=0)
+            loss_1D = F.mse_loss(spec, predicted_1D, reduction='mean');
+            loss_2D = F.mse_loss(diff, predicted_2D, reduction='mean');
+            loss_2D = (loss_2D*mask.float()).sum()
+            loss_2D /= mask.sum()
 
-            loss = loss + reg_loss_1 + contras_loss - maxi_loss
+            loss = loss_1D + loss_2D + reg_loss_1 + contras_loss - maxi_loss
 
             train_loss += loss.item()
 
@@ -903,12 +907,14 @@ class ConvAutoencoder_Multimodal():
             except: 
                 h = h5py.File(self.emb_h5_path,'r+')
 
-            check = self.checkpoint.split('/')[-1][:-4]
+            try: check = self.checkpoint.split('/')[-1][:-4]
+            except: check = self.checkpoint
+            
             try:
-                embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0], self.embedding_size]))
-                scale_shear_ = h.create_dataset(f'scaleshear_{check}', data = np.zeros([data.shape[0],6]))
-                rotation_ = h.create_dataset(f'rotation_{check}', data = np.zeros([data.shape[0],6]))
-                translation_ = h.create_dataset(f'translation_{check}', data = np.zeros([data.shape[0],6]))
+                embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0][0], self.stacked_embedding_size]))
+                scale_shear_ = h.create_dataset(f'scaleshear_{check}', data = np.zeros([data.shape[0][0],6]))
+                rotation_ = h.create_dataset(f'rotation_{check}', data = np.zeros([data.shape[0][0],6]))
+                translation_ = h.create_dataset(f'translation_{check}', data = np.zeros([data.shape[0][0],6]))
             except: 
                 embedding_ = h[f'embedding_{check}']
                 scale_shear_ = h[f'scaleshear_{check}']
@@ -922,11 +928,13 @@ class ConvAutoencoder_Multimodal():
 
         except Exception as error:
             print(error) 
-            assert self.train,"No h5_dataset embedding dataset created"
+            assert train,"No h5_dataset embedding dataset created"
             print('Warning: not saving to h5')
+            h.flush()
                 
         if train: 
             print('Created empty h5 embedding datasets to fill during training')
+            h.flush()
             return 1 # do not calculate. 
             # return true to indicate this is filled during training
 
@@ -942,6 +950,7 @@ class ConvAutoencoder_Multimodal():
                     self.scale_shear[i*batch_size:(i+1)*batch_size, :] = scale_shear.reshape(-1,6).cpu().detach().numpy()
                     self.rotation[i*batch_size:(i+1)*batch_size, :] = rotation.reshape(-1,6).cpu().detach().numpy()
                     self.translation[i*batch_size:(i+1)*batch_size, :] = translation.reshape(-1,6).cpu().detach().numpy()
+        h.flush()
         h.close()
 
     def generate_range(self,meta,checkpoint,
@@ -1070,7 +1079,7 @@ class ConvBlock_1D(nn.Module):
         nn (nn.Module): Torch module class
     """
 
-    def __init__(self, t_size, n_step,in_channels):
+    def __init__(self, t_size, n_step, attn_heads,):
         """Initializes the convolutional block
 
         Args:
@@ -1089,9 +1098,9 @@ class ConvBlock_1D(nn.Module):
             t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
         
-        self.attention_1 = nn.MultiheadAttention(n_step,in_channels)
-        self.attention_2 = nn.MultiheadAttention(n_step,in_channels)
-        self.attention_3 = nn.MultiheadAttention(n_step,in_channels)
+        self.attention_1 = nn.MultiheadAttention(n_step, attn_heads)
+        self.attention_2 = nn.MultiheadAttention(n_step, attn_heads)
+        self.attention_3 = nn.MultiheadAttention(n_step, attn_heads)
         
         # self.norm_3 = nn.LayerNorm(n_step)
         # self.relu_4 = nn.ReLU()
@@ -1204,12 +1213,11 @@ class ConvBlock_2D(nn.Module):
         return out
   
     
-    
 class IdentityBlock_1D(nn.Module):
 
     """Identity Block with 1 convolutional layers, 1 layer normalization layer with ReLU"""
 
-    def __init__(self, t_size, n_step,in_channels):
+    def __init__(self, t_size, n_step, attn_heads):
         """Initializes the identity block
 
         Args:
@@ -1221,7 +1229,7 @@ class IdentityBlock_1D(nn.Module):
         self.cov1d_1 = nn.Conv1d(
             t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
-        self.attention_1 = nn.MultiheadAttention(n_step,in_channels)
+        self.attention_1 = nn.MultiheadAttention(n_step, attn_heads)
         self.norm_1 = nn.LayerNorm(n_step)
         self.relu = nn.ReLU()
 
@@ -1237,6 +1245,7 @@ class IdentityBlock_1D(nn.Module):
 
         x_input = x
         x_k_v = x_input.transpose(0,1)
+        
         out = self.cov1d_1(x)
         out = self.norm_1(out)
         out = self.relu(out)
@@ -1244,14 +1253,10 @@ class IdentityBlock_1D(nn.Module):
         out = out.transpose(0,1)
         out,_ = self.attention_1(out,x_k_v,x_k_v) #implement self-attention layer
         out = out.transpose(0,1)
-        out = self.drop(out)       
+        # out = self.drop(out)       
+        
         return out
-    
-    def forward(self,x):
-        x_input = x
-        x = self.cov1d_1(x)
-        x = self.norm_1(x)
-        x = self.relu(x)
+     
         
 class IdentityBlock_2D(nn.Module):
 
@@ -1265,7 +1270,7 @@ class IdentityBlock_2D(nn.Module):
             n_step (int): Input shape of normalization layer
         """
 
-        super(IdentityBlock2D, self).__init__()
+        super(IdentityBlock_2D, self).__init__()
         self.cov2d_1 = nn.Conv2d(
             t_size, t_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
@@ -1304,7 +1309,8 @@ class Encoder_1D(nn.Module):
                  embedding_size, 
                  conv_size, 
                  in_channels, 
-                 device):
+                 device,
+                 attn_heads):
         """Build the encoder
 
         Args:
@@ -1318,22 +1324,19 @@ class Encoder_1D(nn.Module):
         self.device = device
         blocks = []
 
+        self.in_channels = in_channels
         self.input_size = original_step_size
         number_of_blocks = len(pooling_list)
 
-        blocks.append( ConvBlock_1D(t_size=conv_size, n_step=original_step_size, 
-                                    in_channels=in_channels) )
-        blocks.append( IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, 
-                                        in_channels=in_channels) )
+        blocks.append( ConvBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads) )
+        blocks.append( IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads) )
         blocks.append( nn.MaxPool1d(pooling_list[0], stride=pooling_list[0]) )
 
         for i in range(1, number_of_blocks):
             original_step_size = original_step_size // pooling_list[i - 1]
             
-            blocks.append( ConvBlock_1D(t_size=conv_size, n_step=original_step_size, 
-                                        in_channels=in_channels) )
-            blocks.append( IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, 
-                                            in_channels=in_channels) )
+            blocks.append( ConvBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads) )
+            blocks.append( IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads) )
             blocks.append( nn.MaxPool1d(pooling_list[i], stride=pooling_list[i]) )
 
         self.block_layer = nn.ModuleList(blocks)
@@ -1341,13 +1344,13 @@ class Encoder_1D(nn.Module):
 
         original_step_size = original_step_size // pooling_list[-1]
             
-        input_size = original_step_size[0] * original_step_size[1]
+        input_size = original_step_size*in_channels
 
         self.cov1d = nn.Conv1d(
-            1, conv_size, 3, stride=1, padding=1, padding_mode="zeros"
+            in_channels, conv_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
         self.cov1d_1 = nn.Conv1d(
-            conv_size, 1, 3, stride=1, padding=1, padding_mode="zeros"
+            conv_size, in_channels, 3, stride=1, padding=1, padding_mode="zeros"
         )
         self.relu_1 = nn.ReLU()
         self.dense = nn.Linear(input_size, embedding_size)
@@ -1361,11 +1364,12 @@ class Encoder_1D(nn.Module):
         Returns:
             Tensor: output tensor
         """
-        out = x.view(-1, 1, self.input_size)
+        out = x.view(-1, self.in_channels, self.input_size)
         out = self.cov1d(out)
         for i in range(self.layers):
+            layer = self.block_layer[i]
             out = self.block_layer[i](out)
-        out = self.cov2d_1(out)
+        out = self.cov1d_1(out)
         out = torch.flatten(out, start_dim=1)
         out = self.dense(out)
         selection = self.relu_1(out)
@@ -1465,8 +1469,6 @@ class Encoder_2D(nn.Module):
 
         return selection,scaler_shear, rotation, translation
 
-
-
 class Decoder_1D(nn.Module):
     """Decoder class
 
@@ -1480,7 +1482,7 @@ class Decoder_1D(nn.Module):
         embedding_size, # stacked embedding 
         conv_size,
         out_channels,
-        original_depth
+        attn_heads
     ):
         """Decoder block
 
@@ -1493,43 +1495,38 @@ class Decoder_1D(nn.Module):
         """
 
         super(Decoder_1D, self).__init__()
-        self.input_size_ = original_step_size
+        self.input_size = original_step_size
         self.channels = out_channels
                 
-        self.dense = nn.Linear(
+        self.dense = nn.Linear( # for here, should I do two separate channels, or just repeat the embedding?
             embedding_size, original_step_size*out_channels
         )
         self.cov1d = nn.Conv1d(
             out_channels, conv_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
-        self.cov1d_1 = nn.Conv1d(
-            conv_size, out_channels, 3, stride=1, padding=1, padding_mode="zeros"
-        )
 
         blocks = []
         number_of_blocks = len(upsampling_list)
         blocks.append( 
-            ConvBlock_1D(t_size=conv_size, n_step=original_step_size, in_channels=out_channels)
+            ConvBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads)
         )
         blocks.append( 
-            IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, in_channels=out_channels)
+            IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads)
         )
         
         for i in range(number_of_blocks):
             blocks.append(
                 nn.Upsample(
-                    scale_factor=upsampling_list[i],
-                    mode="bilinear",
-                    align_corners=True,
+                    scale_factor=upsampling_list[i]
                 )
             )
             original_step_size = original_step_size * upsampling_list[i]
             
             blocks.append(
-                ConvBlock_1D(t_size=conv_size, n_step=original_step_size, in_channels=out_channels)
+                ConvBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads)
             )
             blocks.append(
-                IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, in_channels=out_channels)
+                IdentityBlock_1D(t_size=conv_size, n_step=original_step_size, attn_heads = attn_heads)
             )
 
         self.block_layer = nn.ModuleList(blocks)
@@ -1537,6 +1534,10 @@ class Decoder_1D(nn.Module):
 
         self.output_size = original_step_size
 
+        self.cov1d_1 = nn.Conv1d(
+            conv_size, out_channels, 3, stride=1, padding=1, padding_mode="zeros"
+        )
+        
     def forward(self, x):
         """Forward pass of the identity block
 
@@ -1551,9 +1552,10 @@ class Decoder_1D(nn.Module):
         out = out.view(-1, self.channels, self.input_size) # batch_size, numb channels, embedding size
         out = self.cov1d(out)
         for i in range(self.layers):
+            layer = self.block_layer[i]
             out = self.block_layer[i](out)
         out = self.cov1d_1(out)
-        output = out.view(-1, self.output_size_0, self.output_size_1)
+        output = out.view(-1, self.channels, self.output_size)
 
         return output
 
@@ -1570,7 +1572,6 @@ class Decoder_2D(nn.Module):
         upsampling_list,
         embedding_size,
         conv_size,
-        pooling_list,
     ):
         """Decoder block
 
@@ -1756,47 +1757,47 @@ class Affine_Transform(nn.Module):
         return scaler_shear, rotation, translation, mask_parameter
 
 ## TODO: adjust transformer class so we can apply transforms during decoding
-class Transformer(nn.Module):
-    def __init__(self,device):
-        #         """AutoEncoder model
+# class Transformer(nn.Module):
+#     def __init__(self,device):
+#         """AutoEncoder model
 
-        #         Args:
-        #             enc (nn.Module): Encoder block
-        #             dec (nn.Module): Decoder block
-        #         """
-        #         super().__init__()
-        #         self.device = device
+#         Args:
+#             enc (nn.Module): Encoder block
+#             dec (nn.Module): Decoder block
+#         """
+#         super().__init__()
+#         self.device = device
 
-        #     def forward(self, x):
-        #         """Forward pass of the autoencoder applies and affine grid to the decoder value
+#     def forward(self, x):
+#         """Forward pass of the autoencoder applies and affine grid to the decoder value
 
-        #         Args:
-        #             x (Tensor): Input (training data)
+#         Args:
+#             x (Tensor): Input (training data)
 
-        #        Returns:
-        #             embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
-        #         """
-        #         predicted,affines = x
-        #         scaler_shear,rotation,translation = affines
-                
-        #         # sample and apply affine grids
-        #         size_grid = torch.ones([predicted.shape[0], 1, 
-        #                                 predicted.shape[-2], 
-        #                                 predicted.shape[-1]])
+#         Returns:
+#             embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
+#         """
+#         predicted,affines = x
+#         scaler_shear,rotation,translation = affines
+        
+#         # sample and apply affine grids
+#         size_grid = torch.ones([predicted.shape[0], 1, 
+#                                 predicted.shape[-2], 
+#                                 predicted.shape[-1]])
 
-        #         grid_1 = F.affine_grid(scaler_shear.to(self.device), 
-        #                                size_grid.size()).to(self.device) # scale shear
-        #         grid_2 = F.affine_grid(rotation.to(self.device), 
-        #                                size_grid.size()).to(self.device) # rotation
-        #         grid_3 = F.affine_grid(translation.to(self.device), 
-        #                                size_grid.size()).to(self.device) # translation
-                
-        #         predicted = F.grid_sample(predicted,grid_3) # translation first to center
-        #         predicted = F.grid_sample(predicted,grid_1)
-        #         predicted = F.grid_sample(predicted,grid_2)
+#         grid_1 = F.affine_grid(scaler_shear.to(self.device), 
+#                                 size_grid.size()).to(self.device) # scale shear
+#         grid_2 = F.affine_grid(rotation.to(self.device), 
+#                                 size_grid.size()).to(self.device) # rotation
+#         grid_3 = F.affine_grid(translation.to(self.device), 
+#                                 size_grid.size()).to(self.device) # translation
+        
+#         predicted = F.grid_sample(predicted,grid_3) # translation first to center
+#         predicted = F.grid_sample(predicted,grid_1)
+#         predicted = F.grid_sample(predicted,grid_2)
 
-        #         return predicted
-        return
+#         return predicted
+        
         
 
 class AutoEncoder(nn.Module):
@@ -1805,7 +1806,6 @@ class AutoEncoder(nn.Module):
                  enc_2D,
                  dec_1D,
                  dec_2D,
-                 emb_size,
                  device,
                  training=True,
                  generator_mode='affine'):
@@ -1816,8 +1816,8 @@ class AutoEncoder(nn.Module):
             dec (nn.Module): Decoder block
             emb_size ():
             device():
-            train (bool): 
-            mode (): {'affine','no_affine'}
+            training (bool): If we are training, return embeddings for writing. If generating, return predicted only
+            mode (str): {'affine','no_affine'} whether or not you want to apply affine transform at end
         """
         super().__init__()
         self.device = device
@@ -1825,7 +1825,7 @@ class AutoEncoder(nn.Module):
         self.enc_2D = enc_2D
         self.dec_1D = dec_1D
         self.dec_2D = dec_2D
-        self.temp_affines = None # saves for filling embedding info
+        self.temp_affines = None # for filling embedding info
         self.training = training
         self.generator_mode = generator_mode
         # self.transformer = Transformer(self.device)
@@ -1834,38 +1834,46 @@ class AutoEncoder(nn.Module):
         """Forward pass of the autoencoder applies and affine grid to the decoder value
 
         Args:
-            x (Tensor): Input (training data)
+            x (tuple of Tensor): (diffraction, spectrum) (training data)
 
        Returns:
             embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
         """
-        embedding_1D = self.enc_1D()
-        embedding,scaler_shear,rotation,translation = self.enc(x)
-        predicted = self.dec(embedding).unsqueeze(1)
-        self.temp_affines = scaler_shear,rotation,translation
+        diff, spec = x
         
+        embedding_1D = self.enc_1D(spec) # (batchsize, emb1dsize)
+        embedding_2D,scaler_shear,rotation,translation = self.enc_2D(diff) # (batchsize, emb2dsize)
+        embedding = torch.cat((embedding_1D,embedding_2D), 1) # (batchsize, emb1dsize + emb2dsize)
+        
+        predicted_1D = self.dec_1D(embedding)
+        predicted_2D = self.dec_2D(embedding).unsqueeze(1)
+        self.temp_affines = scaler_shear,rotation,translation # for writing to embedding during training
+        
+        # if we do not apply affine transforms, return either the embedding or predicted, 
+        # based on whether we are writing to embedding file directly during training
         if self.generator_mode=='no_affine':
             if self.training: # writing embedding in real time while training
-                return embedding, predicted.squeeze()
+                return embedding, predicted_1D, predicted_2D # .squeeze() ?
             if not self.training:
-                return predicted.squeeze()
+                return predicted_1D, predicted_2D
 
+### make Transform class?
         # sample and apply affine grids
-        size_grid = torch.ones([x.shape[0],1,x.shape[-2],x.shape[-1]])
+        size_grid = torch.ones([predicted_2D.shape[0],1,predicted_2D.shape[-2],predicted_2D.shape[-1]])
 
         grid_1 = F.affine_grid(scaler_shear.to(self.device), size_grid.size()).to(self.device) # scale shear
         grid_2 = F.affine_grid(rotation.to(self.device), size_grid.size()).to(self.device) # rotation
         grid_3 = F.affine_grid(translation.to(self.device), size_grid.size()).to(self.device) # translation
 
-        predicted = F.grid_sample(predicted,grid_3) # translation first to center
-        predicted = F.grid_sample(predicted,grid_1)
-        predicted = F.grid_sample(predicted,grid_2)
-
+        predicted_2D = F.grid_sample(predicted_2D,grid_3) # translation first (ideally to center)
+        predicted_2D = F.grid_sample(predicted_2D,grid_1) # scale shear
+        predicted_2D = F.grid_sample(predicted_2D,grid_2) # rotation
+### 
         if self.generator_mode=='affine':
             if self.training: 
-                return embedding,predicted.squeeze()
+                return embedding, predicted_1D, predicted_2D
             if not self.training: 
-                return predicted.squeeze()
+                return predicted_1D, predicted_2D 
         
         assert False, 'set train to True/False, and generator_mode to affine/no_affine'
 
