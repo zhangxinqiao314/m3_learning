@@ -656,7 +656,6 @@ class ConvAutoencoder_Multimodal():
         # sets the datatype of the model to float32
         self.autoencoder.type(torch.float32)
 
-    ## TODO: implement embedding calculation/unshuffler
     def Train(self,
               data,
               max_learning_rate=1e-4,
@@ -728,7 +727,7 @@ class ConvAutoencoder_Multimodal():
             if epoch % save_emb_every ==0: # tell loss function to give embedding every however many epochs
                 print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
                 print('.............................')
-                fill_embeddings = self.get_embedding(data, train=True)
+                fill_embeddings = self.get_embedding(data, check='temp', train=True)
 
 
             train = self.loss_function(
@@ -746,9 +745,11 @@ class ConvAutoencoder_Multimodal():
                 checkpoint = {
                     "net": self.autoencoder.state_dict(),
                     'optimizer': self.optimizer.state_dict(),
-                    "epoch": epoch,
-                    "encoder": self.encoder.state_dict(),
-                    'decoder': self.decoder.state_dict(),
+                    "epoch": 0,
+                    "encoder_1D": self.encoder_1D.state_dict(),
+                    "encoder_2D": self.encoder_2D.state_dict(),
+                    'decoder_1D': self.decoder_1D.state_dict(),
+                    'decoder_2D': self.decoder_2D.state_dict(),
                 }
                 if epoch >= 0:
                     lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
@@ -886,7 +887,7 @@ class ConvAutoencoder_Multimodal():
             print(error)
             print('Generated not opened')
 
-    def get_embedding(self, data, batch_size=32,train=True):
+    def get_embedding(self, data, check = None, batch_size=32,train=True):
         """extracts embeddings from the data
 
         Args:
@@ -902,13 +903,12 @@ class ConvAutoencoder_Multimodal():
             batch_size, shuffle=False)
 
         try:
-            try: 
-                h = h5py.File(self.emb_h5_path,'w')
-            except: 
-                h = h5py.File(self.emb_h5_path,'r+')
+            try: h = h5py.File(self.emb_h5_path,'w')
+            except: h = h5py.File(self.emb_h5_path,'r+')
 
-            try: check = self.checkpoint.split('/')[-1][:-4]
-            except: check = self.checkpoint
+            if check==None: 
+                try: check = self.checkpoint.split('/')[-1][:-4]
+                except: check = self.checkpoint
             
             try:
                 embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0][0], self.stacked_embedding_size]))
@@ -1295,7 +1295,6 @@ class IdentityBlock_2D(nn.Module):
         return out
 
 
-
 class Encoder_1D(nn.Module):
     """Encoder block
 
@@ -1648,7 +1647,6 @@ class Decoder_2D(nn.Module):
         output = out.view(-1, self.output_size_0, self.output_size_1)
 
         return output
-
 
 
 class Affine_Transform(nn.Module):
