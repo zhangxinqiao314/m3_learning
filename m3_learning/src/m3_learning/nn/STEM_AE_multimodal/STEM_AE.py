@@ -864,8 +864,10 @@ class ConvAutoencoder_Multimodal():
         self.checkpoint = path_checkpoint
         checkpoint = torch.load(path_checkpoint)
         self.autoencoder.load_state_dict(checkpoint['net'])
-        self.encoder.load_state_dict(checkpoint['encoder'])
-        self.decoder.load_state_dict(checkpoint['decoder'])
+        self.encoder_1D.load_state_dict(checkpoint['encoder_1D'])
+        self.encoder_2D.load_state_dict(checkpoint['encoder_2D'])
+        self.decoder_1D.load_state_dict(checkpoint['decoder_1D'])
+        self.decoder_2D.load_state_dict(checkpoint['decoder_2D'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.start_epoch = checkpoint['epoch']
         check = path_checkpoint.split('/')[-1][:-4]
@@ -899,16 +901,14 @@ class ConvAutoencoder_Multimodal():
         """
 
         # builds the dataloader
-        dataloader = DataLoader(data, 
-            batch_size, shuffle=False)
+        dataloader = DataLoader(data, batch_size, shuffle=False)
 
         try:
             try: h = h5py.File(self.emb_h5_path,'w')
             except: h = h5py.File(self.emb_h5_path,'r+')
 
             if check==None: 
-                try: check = self.checkpoint.split('/')[-1][:-4]
-                except: check = self.checkpoint
+                check = self.checkpoint.split('/')[-1][:-4]
             
             try:
                 embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0][0], self.stacked_embedding_size]))

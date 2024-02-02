@@ -38,7 +38,7 @@ def embeddings(embedding, mod=4,
     for i,c in enumerate(channels):
         # plots the imagemap and formats
         imagemap(axs[i], embedding[:, c].reshape(
-            shape_[-4], shape_[-3]), divider_=False, **kwargs)
+            shape_[0], shape_[1]), divider_=False, **kwargs)
 
     # adds labels to the figure
     if labelfigs_:

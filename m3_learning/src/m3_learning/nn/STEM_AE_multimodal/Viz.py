@@ -10,6 +10,7 @@ from m3_learning.viz.nn import embeddings as embeddings_
 from m3_learning.viz.nn import affines as affines_
 import glob
 import os
+import h5py
 
 ## TODO: get original Viz in here too
 class Viz_Multimodal:
@@ -216,7 +217,7 @@ class Viz_Multimodal:
             values = self.model(values.float())
             values = values.detach().numpy()
             return values
-
+        
     def embeddings(self,meta,savefolder,overwrite=False, **kwargs):
         """function to plot the embeddings of the data
         """        
@@ -224,20 +225,32 @@ class Viz_Multimodal:
         for i,p_name in enumerate(tqdm(meta['particle_list'])): # each sample
             if not overwrite: 
                 existing = [item.split('/')[-1] for item in glob.glob(f'{self.printer.basepath}{savefolder}*')]
-                if p_name+'_embedding_maps.png' in existing:
-                    print('skipping',savefolder+p_name+'_embedding_maps.png')
+                if '*'+p_name+'_embedding_maps.png' in existing:
+                    print('skipping',savefolder+'*'+p_name+'_embedding_maps.png')
                     continue
 
             data=self.model.embedding[ meta['particle_inds'][i]:\
                                         meta['particle_inds'][i+1]]
             make_folder(self.printer.basepath+savefolder)
+            
+            # 1D embeddings
             embeddings_(data, 
-                    channels=self.channels, 
+                    channels=self.channels[:self.model.embedding_size_1D], 
                     labelfigs_ = self.labelfigs_,
                     printer = self.printer,
-                    shape_=meta['shape_list'][i],
-                    name = savefolder+p_name,
-                    # clim=(0,data.max()),
+                    shape_=meta['shape_list'][i][0],
+                    name = savefolder+'1D_'+p_name,
+                    figsize=(5, 6),
+                    **kwargs)
+            
+            # 2D embeddings
+            embeddings_(data, 
+                    channels=self.channels[self.model.embedding_size_1D:], 
+                    labelfigs_ = self.labelfigs_,
+                    printer = self.printer,
+                    shape_=meta['shape_list'][i][0],
+                    name = savefolder+'2D_'+p_name,
+                    figsize=(5, 8),
                     **kwargs)
             plt.clf();
             plt.close();
