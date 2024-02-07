@@ -11,6 +11,7 @@ from m3_learning.viz.nn import affines as affines_
 import glob
 import os
 import h5py
+from matplotlib.colors import ListedColormap
 
 ## TODO: get original Viz in here too
 class Viz_Multimodal:
@@ -229,8 +230,10 @@ class Viz_Multimodal:
                     print('skipping',savefolder+'*'+p_name+'_embedding_maps.png')
                     continue
 
-            data=self.model.embedding[ meta['particle_inds'][i]:\
-                                        meta['particle_inds'][i+1]]
+            with self.model.open_embedding_h() as h:
+                data=self.model.embedding[ meta['particle_inds'][i]:\
+                                            meta['particle_inds'][i+1]]
+                
             make_folder(self.printer.basepath+savefolder)
             
             # 1D embeddings
@@ -239,7 +242,7 @@ class Viz_Multimodal:
                     labelfigs_ = self.labelfigs_,
                     printer = self.printer,
                     shape_=meta['shape_list'][i][0],
-                    name = savefolder+'1D_'+p_name,
+                    name = savefolder+p_name+'_1D',
                     figsize=(5, 6),
                     **kwargs)
             
@@ -249,12 +252,12 @@ class Viz_Multimodal:
                     labelfigs_ = self.labelfigs_,
                     printer = self.printer,
                     shape_=meta['shape_list'][i][0],
-                    name = savefolder+'2D_'+p_name,
+                    name = savefolder+p_name+'_2D',
                     figsize=(5, 8),
                     **kwargs)
             plt.clf();
             plt.close();
-    
+        
     def affines(self,meta,savefolder,overwrite=False, **kwargs):
         """function to plot the embeddings of the data
         """        
@@ -265,24 +268,72 @@ class Viz_Multimodal:
                 if p_name+'_affine_maps.png' in existing:
                     print('skipping',savefolder+p_name+'_embedding_maps.png')
                     continue
-
-            affines_data=(self.model.scale_shear[ meta['particle_inds'][i]:\
-                                        meta['particle_inds'][i+1]],
-                          self.model.scale_shear[ meta['particle_inds'][i]:\
-                                        meta['particle_inds'][i+1]],
-                          self.model.scale_shear[ meta['particle_inds'][i]:\
-                                        meta['particle_inds'][i+1]] )
+                
+            with self.model.open_embedding_h() as h:
+                affines_data=(self.model.scale_shear[ meta['particle_inds'][i]:\
+                                            meta['particle_inds'][i+1]],
+                            self.model.scale_shear[ meta['particle_inds'][i]:\
+                                            meta['particle_inds'][i+1]],
+                            self.model.scale_shear[ meta['particle_inds'][i]:\
+                                            meta['particle_inds'][i+1]] )
+                
             make_folder(self.printer.basepath+savefolder)
             affines_(affines_data, 
                     labelfigs_ = self.labelfigs_,
                     printer = self.printer,
-                    shape_=meta['shape_list'][i],
+                    shape_=meta['shape_list'][i][0],
                     name = savefolder+p_name,
                     # clim=(0,data.max()),
                     **kwargs)
             plt.clf();
             plt.close();
             
+    def clustered_images(self, dset, cluster_list, labels,
+                         save_folder = './',
+                         labelfigs_ = False,
+                         scalebar_ = None,
+                         printer = None,
+                         **kwargs):
+        
+        # colors = iter([plt.cm.tab20(i) for i in range(20)])
+        colors = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet', 'brown', 'pink', 'gray', 'olive', 'cyan', 'navy', 'teal', 'maroon', 'silver', 'tan', 'gold', 'purple', 'moccasin', 'bisque', 'wheat', 'peachpuff', 'navajowhite', 'salmon', 'crimson', 'palevioletred', 'darksalmon', 'lightcoral', 'hotpink', 'palegoldenrod', 'plum', 'darkkhaki', 'orchid', 'thistle', 'lightgray', 'lightgreen', 'lightblue', 'lightskyblue', 'lightyellow', 'lavender', 'linen']
+        n_clusters = len(np.unique(labels))
+        colors = colors[:n_clusters]
+        self.cmap = ListedColormap(colors,'segmented',N=n_clusters)
+        
+        for i,particle in enumerate(tqdm(dset.meta['particle_list'])):
+            # builds the figure
+            fig, axs = layout_fig(1, **kwargs)
+
+            # loops around the channels to plot
+            imagemap(axs[0], cluster_list[i],clim=(0,n_clusters-1),colormap=self.cmap,
+                     cbar_number_format='%2.0e', divider_=False, **kwargs)
+
+            # adds labels to the figure
+            if labelfigs_:
+                for i, ax in enumerate(axs):
+                    labelfigs(ax, i)
+
+            # adds the scalebar
+            if scalebar_ is not None:
+                add_scalebar(axs.flatten()[-1], scalebar_)
+            
+            # prints the image
+            if printer is not None:
+                make_folder(self.printer.basepath+save_folder)
+                self.printer.savefig(fig,
+                    f'./{save_folder}/{particle}', tight_layout=False)
+                
+            plt.close(fig)
+            
+            # plt.clf()
+            # plt.imshow(cluster_list[i],vmin=0,vmax=19,cmap='tab20')
+            # cbar = plt.colorbar()
+            # cbar.set_ticks(np.arange(0,20))
+            # cbar.set_ticklabels(np.arange(20))
+            # plt.title(particle)
+            # plt.savefig(f'./clustering_emb_affine_epoch_13/{particle}',facecolor='white',dpi=200)
+             
     def generator_images(self,meta,generated,
                          embedding=None,
                          folder_name='',

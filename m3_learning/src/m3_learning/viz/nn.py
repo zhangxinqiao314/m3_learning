@@ -53,7 +53,8 @@ def embeddings(embedding, mod=4,
     if printer is not None:
         printer.savefig(fig,
             f'{name}_embedding_maps', tight_layout=False)
-        
+    
+    plt.close(fig)
 
 def get_theta(rotation):
     """_summary_
@@ -156,6 +157,8 @@ def affines(affines,
     if printer is not None:
         printer.savefig(fig,
             f'{name}_affine_maps', tight_layout=False)
+        
+    plt.close(fig)
         
 def latent_generator(
     model,
