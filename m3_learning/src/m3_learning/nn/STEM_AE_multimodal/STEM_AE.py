@@ -541,7 +541,7 @@ class ConvAutoencoder_Multimodal():
                  upsampling_list_2D,
                  embedding_size_1D,
                  embedding_size_2D,
-                 stacked_embedding_size,
+                 embedding_size,
                  in_channels,
                  conv_size_1D,
                  conv_size_2D,
@@ -578,7 +578,9 @@ class ConvAutoencoder_Multimodal():
 
         self.embedding_size_1D = embedding_size_1D
         self.embedding_size_2D = embedding_size_2D
-        self.stacked_embedding_size = stacked_embedding_size
+        self.stacked_embedding_size = embedding_size_1D+embedding_size_2D
+        self.embedding_size = embedding_size
+
 
         self.conv_size_1D = conv_size_1D
         self.conv_size_2D = conv_size_2D
@@ -657,6 +659,7 @@ class ConvAutoencoder_Multimodal():
         self.autoencoder = AutoEncoder(
             self.encoder_1D, self.encoder_2D, 
             self.decoder_1D, self.decoder_2D,
+            self.stacked_embedding_size, self.embedding_size,
             self.device).to(self.device)
 
         # sets the optimizers
@@ -1021,6 +1024,99 @@ class ConvAutoencoder_Multimodal():
         self.cluster_labels = kmeans_pca.labels_
         print('Done')
         return cluster_list,kmeans_pca.labels_
+
+    def generate_by_labels(self,meta,labels,
+                            checkpoint=None,
+                            channels=None,
+                            #  averaging_number=100,
+                            overwrite=False,
+                            with_affine=False,
+                            **kwargs
+                            ):
+        """Generates images as the variables traverse the latent space.
+        Saves to embedding h5 dataset
+
+        Args:
+            embedding (tensor, optional): embedding to predict with. Defaults to None.
+            folder_name (str, optional): name of folder where images are saved. Defaults to ''.
+            ranges (list, optional): sets the range to generate images over. Defaults to None.
+            generator_iters (int, optional): number of iterations to use in generation. Defaults to 200.
+            averaging_number (int, optional): number of embeddings to average. Defaults to 100.
+            graph_layout (list, optional): layout parameters of the graph (#graphs,#perrow). Defaults to [2, 2].
+            shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
+        """
+
+        assert not self.train, 'set self.train to False'
+        
+        # sets the kwarg values
+        for key, value in kwargs.items():
+            exec(f'{key} = value')
+
+        if channels==None: channels = np.arange(self.embedding_size)
+
+        # gets the embedding if a specific embedding is not provided
+        try:
+            embedding = self.embedding
+        except Exception as error:
+            print(error)
+            assert False, 'Make sure model is set to appropriate embeddings first'
+
+        try: # try opening h5 file
+            try: # make new file
+                h = h5py.File(self.gen_h5_path,'r+')
+            except: # open existing file
+                h = h5py.File(self.gen_h5_path,'w')
+
+            if checkpoint==None: check = self.checkpoint.split('/')[-1][:-4]
+            else: check = checkpoint
+            
+            try: # make new dataset
+                if overwrite and check in h: del h[check]
+                self.generated = h.create_dataset(check,
+                                            data=np.zeros( [len(meta['particle_list']),
+                                                            len(np.unique(labels)),
+                                                            len(channels),
+                                                            128,128] ) )
+                self.generated.attrs['clustered']=True      
+                print(check)
+            except: # open existing dataset for checkpoint
+                self.generated = h[check]
+                
+        except Exception as error: # cannot open h5
+            print(error)
+            assert False,"No h5_dataset generated dataset created"
+
+        # for p,p_name in enumerate(meta['particle_list']): # each sample
+        #     print(p, p_name)
+        #     data=self.embedding[meta['particle_inds'][p]:\
+        #                         meta['particle_inds'][p+1]]
+        for p,p_name in enumerate(meta['particle_list']): # each sample
+            print(p, p_name)
+            # shape 128*128, 32
+            data=self.embedding[meta['particle_inds'][p]:\
+                                meta['particle_inds'][p+1]]
+            data_labels=labels[meta['particle_inds'][p]:\
+                                meta['particle_inds'][p+1]]
+            inds=None
+            # loops around the number of iterations to generate
+            for i in tqdm(np.unique(labels)):
+                inds = np.argwhere(data_labels==i)
+            
+                # # specifically updates the value of the mean embedding image to visualize 
+                # # based on the linear spaced vector
+                # gen_value[channel] = value[i]
+
+                # # generates diffraction pattern
+                # for ind in inds:
+                #     self.generated[ind,i] = self.generate_spectra(embedding[ind,i,j]).squeeze()
+                # gen_values
+
+                # generate spectrum at each index
+                gen_value = np.atleast_2d(data[inds]).mean(axis=0).squeeze()
+                
+                self.generated[p,i] = self.generate_spectra(gen_value)
+                # time.sleep(0.5)
+        h.close()
 
     def generate_range(self,meta,checkpoint,
                          ranges=None,
@@ -1834,7 +1930,7 @@ class Affine_Transform(nn.Module):
         return scaler_shear, rotation, translation, mask_parameter
 
 ## TODO: adjust transformer class so we can apply transforms during decoding
-# class Transformer(nn.Module):
+class Transformer(nn.Module):
 #     def __init__(self,device):
 #         """AutoEncoder model
 
@@ -1874,6 +1970,7 @@ class Affine_Transform(nn.Module):
 #         predicted = F.grid_sample(predicted,grid_2)
 
 #         return predicted
+    pass
         
         
 
@@ -1883,6 +1980,8 @@ class AutoEncoder(nn.Module):
                  enc_2D,
                  dec_1D,
                  dec_2D,
+                 stacked_size,
+                 emb_size,
                  device,
                  get_embeddings=False,
                  training=True,
@@ -1907,6 +2006,7 @@ class AutoEncoder(nn.Module):
         self.get_embeddings=get_embeddings
         self.training = training
         self.generator_mode = generator_mode
+        self.dense = nn.Linear()
         # self.transformer = Transformer(self.device)
 
     def forward(self, x):
@@ -1923,7 +2023,7 @@ class AutoEncoder(nn.Module):
         embedding_1D = self.enc_1D(spec) # (batchsize, emb1dsize)
         embedding_2D,scaler_shear,rotation,translation = self.enc_2D(diff) # (batchsize, emb2dsize)
         embedding = torch.cat((embedding_1D,embedding_2D), 1) # (batchsize, emb1dsize + emb2dsize)
-        
+        # add dense layer here
         if self.get_embeddings: return embedding,scaler_shear,rotation,translation
         
         predicted_1D = self.dec_1D(embedding)
