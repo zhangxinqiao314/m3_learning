@@ -551,6 +551,7 @@ class ConvAutoencoder_Multimodal():
                  learning_rate=3e-5,
                  emb_h5_path = './Combined_all_samples/embeddings.h5',
                  gen_h5_path = './Combined_all_samples/generated.h5',
+                 in_parallel = True
                  ):
         """Initialization function
 
@@ -595,6 +596,7 @@ class ConvAutoencoder_Multimodal():
 
         self.emb_h5_path = emb_h5_path
         self.gen_h5_path = gen_h5_path
+        self.in_parallel = in_parallel
 
         # complies the network
         self.compile_model()
@@ -602,10 +604,13 @@ class ConvAutoencoder_Multimodal():
     def open_embedding_h(self):
         check = self.checkpoint.split('/')[-1][:-4]
         h = h5py.File(self.emb_h5_path,'r+')
-        self.embedding = h[f'embedding_{check}']
-        self.scale_shear = h[f'scaleshear_{check}']
-        self.rotation = h[f'rotation_{check}']                    
-        self.translation = h[f'translation_{check}']
+        try:
+            self.embedding = h[f'embedding_{check}']
+            self.scale_shear = h[f'scaleshear_{check}']
+            self.rotation = h[f'rotation_{check}']                    
+            self.translation = h[f'translation_{check}']
+        except: 
+            pass
         return h
     
     def open_generated_h(self):
@@ -640,7 +645,7 @@ class ConvAutoencoder_Multimodal():
         self.decoder_1D = Decoder_1D(
             original_step_size=self.decoder_step_size_1D,
             upsampling_list=self.upsampling_list_1D,
-            embedding_size=self.stacked_embedding_size,
+            embedding_size=self.embedding_size,
             conv_size=self.conv_size_1D,
             out_channels=self.channels_1D,
             attn_heads=self.attn_heads,
@@ -650,7 +655,7 @@ class ConvAutoencoder_Multimodal():
         self.decoder_2D = Decoder_2D(
             original_step_size=self.decoder_step_size_2D,
             upsampling_list=self.upsampling_list_2D,
-            embedding_size=self.stacked_embedding_size,
+            embedding_size=self.embedding_size,
             conv_size=self.conv_size_2D,
         ).to(self.device)
 
@@ -660,7 +665,10 @@ class ConvAutoencoder_Multimodal():
             self.encoder_1D, self.encoder_2D, 
             self.decoder_1D, self.decoder_2D,
             self.stacked_embedding_size, self.embedding_size,
-            self.device).to(self.device)
+            self.device)
+        if self.in_parallel:
+            self.autoencoder = nn.DataParallel(self.autoencoder)
+        self.autoencoder = self.autoencoder.to(self.device)
 
         # sets the optimizers
         self.optimizer = optim.Adam(
@@ -717,7 +725,8 @@ class ConvAutoencoder_Multimodal():
         # option to use the learning rate scheduler
         if with_scheduler:
             scheduler = torch.optim.lr_scheduler.CyclicLR(
-                self.optimizer, base_lr=self.learning_rate, max_lr=max_learning_rate, step_size_up=15, cycle_momentum=False)
+                self.optimizer, base_lr=self.learning_rate, max_lr=max_learning_rate, 
+                step_size_up=15, cycle_momentum=False)
         else:
             scheduler = None
 
@@ -744,33 +753,34 @@ class ConvAutoencoder_Multimodal():
                 fill_embeddings = self.get_embedding(data, check='temp', no_calculate=True)
 
 
-            train = self.loss_function(
+            train_dict = self.loss_function(
                 self.DataLoader_, coef_1, coef_2, coef_3, ln_parm,
                 fill_embeddings=fill_embeddings)
-            train_loss = train
-            train_loss /= len(self.DataLoader_)
+            train_dict = {key: value / len(self.DataLoader_) for key, value in train_dict.items()}
+            train_loss = sum([val for val in train_dict.values()])
             print(
                 f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {train_loss:.4f}')
             print('.............................')
 
           #  schedular.step()
-            if best_train_loss > train_loss:
-                best_train_loss = train_loss
-                checkpoint = {
-                    "net": self.autoencoder.state_dict(),
-                    'optimizer': self.optimizer.state_dict(),
-                    "epoch": 0,
-                    "encoder_1D": self.encoder_1D.state_dict(),
-                    "encoder_2D": self.encoder_2D.state_dict(),
-                    'decoder_1D': self.decoder_1D.state_dict(),
-                    'decoder_2D': self.decoder_2D.state_dict(),
-                }
-                if epoch >= 0:
-                    lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
-                    file_path = folder_path + f'/{save_date}_' +\
-                        f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
-                        f'_trainloss:{train_loss:.4f}.pkl'
-                    torch.save(checkpoint, file_path)
+            # if best_train_loss > train_loss:
+            best_train_loss = train_loss
+            checkpoint = {
+                "net": self.autoencoder.state_dict(),
+                'optimizer': self.optimizer.state_dict(),
+                "epoch": 0,
+                "encoder_1D": self.encoder_1D.state_dict(),
+                "encoder_2D": self.encoder_2D.state_dict(),
+                'decoder_1D': self.decoder_1D.state_dict(),
+                'decoder_2D': self.decoder_2D.state_dict(),
+                'loss_dict': train_dict
+            }
+            if epoch >= 0:
+                lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
+                file_path = folder_path + f'/{save_date}_' +\
+                    f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
+                    f'_trainloss:{train_loss:.4f}.pkl'
+                torch.save(checkpoint, file_path)
 
             if epoch%save_emb_every==0:
                 h = self.embedding.file
@@ -816,11 +826,17 @@ class ConvAutoencoder_Multimodal():
         """
         # set the train mode
         self.autoencoder.train()
-
+        loss_dict = {'contrastive': 0,
+                     'divergence': 0,
+                     'l1': 0,
+                     'l2': 0,
+                     'mse_1d': 0,
+                     'mse_2d': 0,}
+        
         # loss of the epoch
         train_loss = 0
         con_l = ContrastiveLoss(coef1).to(self.device)
-        
+
         for idx,diff,spec in tqdm(train_iterator, leave=True, total=len(train_iterator)):
             # tic = time.time()
             sorted, indices = torch.sort(idx)
@@ -833,11 +849,13 @@ class ConvAutoencoder_Multimodal():
             # update the gradients to zero
             self.optimizer.zero_grad()
 
-            if beta is None: embedding, predicted_1D, predicted_2D = self.autoencoder((diff, spec))
-            else: embedding, sd, mn, predicted_1D, predicted_2D = self.autoencoder((diff, spec))
+            if beta is None: 
+                embedding, predicted_1D, predicted_2D, scale_shear,rotation,translation = self.autoencoder((diff, spec))
+            else: 
+                embedding, sd, mn, predicted_1D, predicted_2D = self.autoencoder((diff, spec))
 
             reg_loss_1 = coef*torch.norm(embedding, ln_parm).to(self.device)/diff.shape[0]
-            if reg_loss_1 == 0: reg_loss_1 = 0.5
+            # if reg_loss_1 == 0: reg_loss_1 = 0.5
 
             contras_loss = con_l(embedding)
             maxi_loss = maxi_(embedding)
@@ -849,8 +867,13 @@ class ConvAutoencoder_Multimodal():
             loss_2D = (loss_2D*mask.float()).sum()
             loss_2D /= mask.sum()
 
+            loss_dict['contrastive']+=contras_loss.item()
+            loss_dict['divergence']-=maxi_loss.item()
+            loss_dict['l1']+=reg_loss_1.item()
+            loss_dict['mse_1d']+=loss_1D.item()
+            loss_dict ['mse_2d']+=loss_2D.item()
+            
             loss = loss_1D + loss_2D + reg_loss_1 + contras_loss - maxi_loss
-
             train_loss += loss.item()
 
             # backward pass
@@ -861,14 +884,14 @@ class ConvAutoencoder_Multimodal():
             
             # fill embedding if the correct epoch
             if fill_embeddings:
-                scale_shear,rotation,translation = self.autoencoder.temp_affines
+                # scale_shear,rotation,translation = self.autoencoder.temp_affines
                 self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
                 self.scale_shear[sorted] = scale_shear[indices].cpu().reshape((-1,6)).detach().numpy()
                 self.rotation[sorted] = rotation[indices].reshape((-1,6)).cpu().detach().numpy()
                 self.translation[sorted] = translation[indices].reshape((-1,6)).cpu().detach().numpy()
                 # print('\tt', abs(tic-toc)) # 2.7684452533721924
 
-        return train_loss
+        return loss_dict
 
     def load_weights(self, path_checkpoint):
         """loads the weights from a checkpoint
@@ -926,7 +949,7 @@ class ConvAutoencoder_Multimodal():
                 check = self.checkpoint.split('/')[-1][:-4]
             
             try:
-                embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0][0], self.stacked_embedding_size]))
+                embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0][0], self.embedding_size]))
                 scale_shear_ = h.create_dataset(f'scaleshear_{check}', data = np.zeros([data.shape[0][0],6]))
                 rotation_ = h.create_dataset(f'rotation_{check}', data = np.zeros([data.shape[0][0],6]))
                 translation_ = h.create_dataset(f'translation_{check}', data = np.zeros([data.shape[0][0],6]))
@@ -954,9 +977,10 @@ class ConvAutoencoder_Multimodal():
             # return true to indicate this is filled during training
 
         else:
+            # self.autoencoder.get_embeddings = True
             for x in tqdm(dataloader, leave=True, total=len(dataloader)):
                 with torch.no_grad():
-                    self.autoencoder.get_embeddings=True
+                    self.autoencoder.get_embeddings = True
                     i=x[0].detach().numpy()
                     test_values = [Variable(x[1].to(self.device)).float(), 
                                    Variable(x[2].to(self.device)).float() ]
@@ -1431,8 +1455,7 @@ class IdentityBlock_1D(nn.Module):
         # out = self.drop(out)       
         
         return out
-     
-        
+       
 class IdentityBlock_2D(nn.Module):
 
     """Identity Block with 1 convolutional layers, 1 layer normalization layer with ReLU"""
@@ -1653,7 +1676,7 @@ class Decoder_1D(nn.Module):
     def __init__(self,
         original_step_size,
         upsampling_list,
-        embedding_size, # stacked embedding 
+        embedding_size, 
         conv_size,
         out_channels,
         attn_heads
@@ -1726,7 +1749,7 @@ class Decoder_1D(nn.Module):
         out = out.view(-1, self.channels, self.input_size) # batch_size, numb channels, embedding size
         out = self.cov1d(out)
         for i in range(self.layers):
-            layer = self.block_layer[i]
+            # layer = self.block_layer[i]
             out = self.block_layer[i](out)
         out = self.cov1d_1(out)
         output = out.view(-1, self.channels, self.output_size)
@@ -2006,7 +2029,9 @@ class AutoEncoder(nn.Module):
         self.get_embeddings=get_embeddings
         self.training = training
         self.generator_mode = generator_mode
-        self.dense = nn.Linear()
+        self.dense = nn.Linear(stacked_size,emb_size)
+        self.relu = nn.ReLU()
+        self.temp_affines=None
         # self.transformer = Transformer(self.device)
 
     def forward(self, x):
@@ -2023,8 +2048,10 @@ class AutoEncoder(nn.Module):
         embedding_1D = self.enc_1D(spec) # (batchsize, emb1dsize)
         embedding_2D,scaler_shear,rotation,translation = self.enc_2D(diff) # (batchsize, emb2dsize)
         embedding = torch.cat((embedding_1D,embedding_2D), 1) # (batchsize, emb1dsize + emb2dsize)
-        # add dense layer here
-        if self.get_embeddings: return embedding,scaler_shear,rotation,translation
+        embedding = self.dense(embedding)
+        embedding = self.relu(embedding)
+        if self.get_embeddings: 
+            return embedding,scaler_shear,rotation,translation
         
         predicted_1D = self.dec_1D(embedding)
         predicted_2D = self.dec_2D(embedding).unsqueeze(1)
@@ -2052,7 +2079,7 @@ class AutoEncoder(nn.Module):
 ### 
         if self.generator_mode=='affine':
             if self.training: 
-                return embedding, predicted_1D, predicted_2D
+                return embedding, predicted_1D, predicted_2D, scaler_shear,rotation,translation
             if not self.training: 
                 return predicted_1D, predicted_2D 
         

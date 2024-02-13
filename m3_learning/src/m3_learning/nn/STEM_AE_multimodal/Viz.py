@@ -235,26 +235,16 @@ class Viz_Multimodal:
                                             meta['particle_inds'][i+1]]
                 
             make_folder(self.printer.basepath+savefolder)
-            
-            # 1D embeddings
+        
             embeddings_(data, 
-                    channels=self.channels[:self.model.embedding_size_1D], 
+                    channels=self.channels[:self.model.embedding_size], 
                     labelfigs_ = self.labelfigs_,
                     printer = self.printer,
                     shape_=meta['shape_list'][i][0],
-                    name = savefolder+p_name+'_1D',
+                    name = savefolder+p_name,
                     figsize=(5, 6),
                     **kwargs)
             
-            # 2D embeddings
-            embeddings_(data, 
-                    channels=self.channels[self.model.embedding_size_1D:], 
-                    labelfigs_ = self.labelfigs_,
-                    printer = self.printer,
-                    shape_=meta['shape_list'][i][0],
-                    name = savefolder+p_name+'_2D',
-                    figsize=(5, 8),
-                    **kwargs)
             plt.clf();
             plt.close();
         
