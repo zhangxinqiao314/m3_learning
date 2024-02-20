@@ -25,6 +25,7 @@ def add_box(axs, pos, **kwargs):
     rect = patches.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, **kwargs)
     axs.add_patch(rect)
 
+
 def inset_connector(fig, ax1, ax2, coord1=None, coord2=None, **kwargs):
     if coord1 is None:
         coord1_xlim = ax1.get_xlim()

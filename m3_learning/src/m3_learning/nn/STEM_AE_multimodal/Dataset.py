@@ -205,8 +205,8 @@ class STEM_EELS_Dataset(Dataset):
     """
     def __init__(self,save_path,
                  EELS_roi={'LL':[], 'HL': []},
-                 overwrite_diff=False,
                  overwrite_eels=False,
+                 overwrite_diff=False,
                  **kwargs):
         """Initialization of the class.
 
@@ -231,11 +231,9 @@ class STEM_EELS_Dataset(Dataset):
         eels_ll_list = glob.glob(f'{save_path}/*/eels*/EELS LL SI.dm4')
         eels_hl_list = glob.glob(f'{save_path}/*/eels*/EELS HL SI.dm4')
         
-        def get_number(path):
-            return int(path.split('/')[-2].split('-')[-1])
-        def get_particle(path):
-            return path.split('/')[-3].split('TRI-8c-5-')[-1]
-        
+        #functions for sorting
+        def get_number(path): return int(path.split('/')[-2].split('-')[-1])
+        def get_particle(path): return path.split('/')[-3].split('TRI-8c-5-')[-1]
         stem_path_list.sort(key=get_number)
         stem_path_list.sort(key=get_particle)
         eels_ll_list.sort(key=get_number)
@@ -312,8 +310,8 @@ class STEM_EELS_Dataset(Dataset):
         with h5py.File(self.h5_name,'a') as h:
             if 'processed_data' not in h:
                 print('\nwriting processed_data h5 datasets')
-                overwrite_eels = False
-                overwrite_diff = False
+                overwrite_eels = True
+                overwrite_diff = True
                 h.create_group('processed_data')       
                 
                 for k,v in self.meta.items(): # write metadata
@@ -324,6 +322,7 @@ class STEM_EELS_Dataset(Dataset):
                                    
             if overwrite_eels:
                 print('\nwriting eels datasets')
+                del h['processed_data/eels']
                 h['processed_data'].create_dataset('eels', shape=(self.length,self.eels_chs,self.spec_len), dtype=float)
                 
                 for i,data in enumerate(tqdm(self.data_list)): 
@@ -337,43 +336,40 @@ class STEM_EELS_Dataset(Dataset):
                         
                         # function to slice data according to peak
                         def slice_data(dat, start, block_info=None, investigate=False):
-                            # print(block_info)
                             block_shape = dat.shape
-                            
-                            # Check if the block is empty (should not be the case)
                             if dat.size == 0 or start.size == 0:
                                 raise ValueError("Received an empty block")
-                            
                             # Initialize an empty array for the result
                             new_chunk = np.empty((block_shape[0], self.spec_len))
                             for i in range(block_shape[0]):
-                                # Extract the start index for this row
                                 start_idx = start[i]
-                                # Perform the slicing
                                 sliced = dat[i, start_idx:start_idx + self.spec_len]
-                                new_chunk[i] = np.log(sliced+1)#.rechunk(block_shape[0],self.spec_len)
+                                new_chunk[i] = da.log(sliced+1)#.rechunk(block_shape[0],self.spec_len)
+                            new_chunk = (new_chunk - new_chunk.min())/new_chunk.max()
+                            
                             return new_chunk 
+                        
                         result = da.map_blocks(slice_data, data_, istart, 
                                                dtype=data_.dtype,
                                                drop_axis = [1],
                                                new_axis=[1], 
-                                               chunks = (1024,self.spec_len),
-                                               )     
+                                               chunks = (1024,self.spec_len), )     
                         da.store(result, dset_slice)
                         h['processed_data/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind] = dset_slice
                         h.flush()
-                                
-                                
-            if overwrite_diff: # TODO: diff.reshape(-1,512*512)?
+                              
+            if overwrite_diff: # TODO: look into rechunking to make maxmin scaling faster
                 print('\nwriting diff datasets')
+                del h['processed_data/diff']
                 h['processed_data'].create_dataset('diff', shape=(self.length,1,512, 512), dtype=float)
                 for i,data_ in enumerate(tqdm(self.data_list)): 
-                    # 4%|▎         | 1/27 [00:18<08:10, 18.85s/it]
-                    h['processed_data/diff'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
-                        np.log(np.array(data_[0].reshape((-1,1,512,512))) + 1)
+                    # 4%|▎         | 1/27 [00:18<08:10, 18.85s/it]\
+                    data__ = da.log(data_[0].reshape((-1,1,512,512)) + 1)
+                    data__ = (data__ - data__.min())/data__.max()
+                    h['processed_data/diff'][self.meta['particle_inds'][i]:\
+                                                        self.meta['particle_inds'][i+1]] = data__
                     h.flush()
                     
-                  
             print('fitting scalers...') # TODO: make custom class to fit scalars nd-wise
             self.scalers = {'diff': StandardScaler(),
                             'eels': [StandardScaler() for sc in range(self.eels_chs)] }
@@ -382,7 +378,8 @@ class STEM_EELS_Dataset(Dataset):
             toc = time.time()
             print(f'\tDiffraction finished: {abs(tic-toc)} s')
             
-            [scaler.fit( h['processed_data/eels'][0:self.length-1:25, 0]) for scaler in self.scalers['eels']]
+            for i,scaler in enumerate(self.scalers['eels']):
+                scaler.fit( h['processed_data/eels'][i])
             tic = time.time()
             print(f'\tEELS finished {abs(tic-toc)} s')
 
@@ -444,7 +441,9 @@ class STEM_EELS_Dataset(Dataset):
             eels = np.array([self.scalers['eels'][ch].transform(eels_[ch].reshape(1,-1)).squeeze() - self.bkgs[i][ch] \
                     for ch in range(self.eels_chs)])
             
-            return index, diff*self.BF_mask[i], eels # TODO: does this need to be returned as array?
+            return index, diff*self.BF_mask[i], eels_ # TODO: does this need to be returned as array?
+            # return index, diff*self.BF_mask[i] # TODO: does this need to be returned as array?
+            # return index, eels_ # TODO: does this need to be returned as array?
         
     def get_raw_spectral_axis(self,ind=0):
         x = np.arange(1024)

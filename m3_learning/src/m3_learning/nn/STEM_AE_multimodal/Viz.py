@@ -231,8 +231,7 @@ class Viz_Multimodal:
                     continue
 
             with self.model.open_embedding_h() as h:
-                data=self.model.embedding[ meta['particle_inds'][i]:\
-                                            meta['particle_inds'][i+1]]
+                data=self.model.embedding[ meta['particle_inds'][i]:meta['particle_inds'][i+1]]
                 
             make_folder(self.printer.basepath+savefolder)
         
@@ -424,5 +423,219 @@ class Viz_Multimodal:
                 plt.close(fig);
         he.close()
         hg.close()
+              
+    def generator_images_1D(self,dset,
+                         folder_name='',
+                         ranges=None,
+                         graph_layout=[2, 2],
+                         shape_=[256, 256, 128, 128],
+                         clim=(0.0,1.0),
+                         scaler=None,
+                         overwrite=True,
+                         **kwargs
+                         ):
+        """Generates images as the variables traverse the latent space
+
+        Args:
+            embedding (tensor, optional): embedding to predict with. Defaults to None.
+            folder_name (str, optional): name of folder where images are saved. Defaults to ''.
+            ranges (list, optional): sets the range to generate images over. Defaults to None.
+            generator_iters (int, optional): number of iterations to use in generation. Defaults to 200.
+            averaging_number (int, optional): number of embeddings to average. Defaults to 100.
+            graph_layout (list, optional): layout parameters of the graph (#graphs,#perrow). Defaults to [2, 2].
+            shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
+        """
+
+        # sets the kwarg values
+        for key, value in kwargs.items():
+            exec(f'{key} = value')
+
+        # sets the channels to use in the object
+        if "channels" in kwargs:
+            self.channels = kwargs["channels"]
+
+        # he = self.model.open_embedding_h()
+        # hg = self.model.open_generated_h()
+
+        check = self.model.checkpoint.split('/')[-1][:-4]
+        # self.model.generated = hg[check]
+        # self.model.embedding = he[f'embedding_{check}']
+
+        # # gets the embedding if a specific embedding is not provided
+        # if embedding is None: embedding = self.model.embedding
+        make_folder(f'{self.printer.basepath}{folder_name}/')
+
+        for p,p_name in enumerate(dset.meta['particle_list']): # each sample
+            existing = [item.split('/')[-1] for item in glob.glob(f'{self.printer.basepath}{folder_name}/{p_name}/*')]
+            
+            print(p, p_name)
+            with self.model.open_embedding_h() as he:
+                emb = self.model.embedding[ dset.meta['particle_inds'][p]:\
+                                            dset.meta['particle_inds'][p+1]]
+            make_folder(f'{self.printer.basepath}{folder_name}/{p_name}/')
+            
+            with self.model.open_generated_h() as hg:            
+                num_particles,generator_iters,emb_ch,spec_ch,spec_len = self.model.generated.shape
+
+                # loops around the number of iterations to generate
+                for i in tqdm(range(generator_iters)):
+                    if not overwrite:
+                        if f'{i:04d}_maps.png' in existing:
+                            print('skipping',f'{folder_name}/{p_name}/{i:04d}_maps')
+                            continue
+
+                    # builds the figure
+                    fig, ax = layout_fig(graph_layout[0], graph_layout[1], **kwargs)
+                    ax = ax.reshape(-1)
+                    
+                    data = self.model.generated[p][i]
+
+                    try:
+                        data=dset.scaler.inverse_transform(
+                            data.reshape(-1,x*y) ).reshape(-1,x,y)
+                    except: pass
+
+                    # loops around all of the embeddings
+                    for j, channel in enumerate(self.channels):
+
+                        if ranges is None: # span this range when generating
+                            ranges = np.stack((np.min(data, axis=(1,2)),
+                                            np.max(data, axis=(1,2))), axis=1)
+                    
+                        # plot each spec channel
+                        for c in range(dset.eels_chs):
+                            color=self.cmap((i+1)/generator_iters)
+                            ind = dset.eels_chs*j + c
+                            spec_i = dset.meta['eels_axis_labels'][c]
+                            x_labels = dset.raw_x_labels[spec_i[0]:spec_i[1]+1,spec_i[2]]
+                            ax[ind].plot(x_labels, data[j,c],color=color)
+                            
+
+                        axes_in = ax[dset.eels_chs*j].inset_axes([0.55, 0.55, 0.43, 0.43])
+
+                        # plots the embedding and formats embedding
+                        imagemap(axes_in, 
+                                emb[:,channel].reshape(dset.meta['shape_list'][p][0][-4], 
+                                                        dset.meta['shape_list'][p][0][-3]), 
+                                colorbars=False)
+                        
+                        # adds labels to the figure
+                        if self.labelfigs_: labelfigs(ax[j], j, size=4, text_pos="center")
+
+                    if self.printer is not None:
+                        self.printer.savefig(fig,
+                                        f'{folder_name}/{p_name}/{i:04d}_maps', 
+                                        tight_layout=False, 
+                                        )
+                    plt.close(fig);
+        # he.close()
+        # hg.close()
+            
+  
+                 
+    def generator_images_2D(self,dset,
+                         folder_name='',
+                         ranges=None,
+                         graph_layout=[2, 2],
+                         shape_=[256, 256, 128, 128],
+                         clim=(0.0,1.0),
+                         scaler=None,
+                         overwrite=True,
+                         **kwargs
+                         ):
+        """Generates images as the variables traverse the latent space
+
+        Args:
+            embedding (tensor, optional): embedding to predict with. Defaults to None.
+            folder_name (str, optional): name of folder where images are saved. Defaults to ''.
+            ranges (list, optional): sets the range to generate images over. Defaults to None.
+            generator_iters (int, optional): number of iterations to use in generation. Defaults to 200.
+            averaging_number (int, optional): number of embeddings to average. Defaults to 100.
+            graph_layout (list, optional): layout parameters of the graph (#graphs,#perrow). Defaults to [2, 2].
+            shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
+        """
+
+        # sets the kwarg values
+        for key, value in kwargs.items():
+            exec(f'{key} = value')
+
+        # sets the channels to use in the object
+        if "channels" in kwargs:
+            self.channels = kwargs["channels"]
+
+        # he = self.model.open_embedding_h()
+        # hg = self.model.open_generated_h()
+
+        check = self.model.checkpoint.split('/')[-1][:-4]
+        # self.model.generated = hg[check]
+        # self.model.embedding = he[f'embedding_{check}']
+
+        # # gets the embedding if a specific embedding is not provided
+        # if embedding is None: embedding = self.model.embedding
+        make_folder(f'{self.printer.basepath}{folder_name}/')
+
+        for p,p_name in enumerate(dset.meta['particle_list']): # each sample
+            existing = [item.split('/')[-1] for item in glob.glob(f'{self.printer.basepath}{folder_name}/{p_name}/*')]
+            
+            print(p, p_name)
+            with self.model.open_embedding_h() as he:
+                emb = self.model.embedding[ dset.meta['particle_inds'][p]:\
+                                            dset.meta['particle_inds'][p+1]]
+            make_folder(f'{self.printer.basepath}{folder_name}/{p_name}/')
+            
+            with self.model.open_generated_h() as hg:            
+                num_particles,generator_iters,emb_ch,x,y = self.model.generated.shape
+
+                # loops around the number of iterations to generate
+                for i in tqdm(range(generator_iters)):
+                    if not overwrite:
+                        if f'{i:04d}_maps.png' in existing:
+                            print('skipping',f'{folder_name}/{p_name}/{i:04d}_maps')
+                            continue
+
+                    # builds the figure
+                    fig, ax = layout_fig(graph_layout[0], graph_layout[1], **kwargs)
+                    ax = ax.reshape(-1)
+                    
+                    data = self.model.generated[p][i]
+
+                    try:
+                        data=dset.scaler.inverse_transform(
+                            data.reshape(-1,x*y) ).reshape(-1,x,y)
+                    except: pass
+
+                    # loops around all of the embeddings
+                    for j, channel in enumerate(self.channels):
+
+                        if ranges is None: # span this range when generating
+                            ranges = np.stack((np.min(data, axis=(1,2)),
+                                            np.max(data, axis=(1,2))), axis=1)
+                    
+                        # plot the generated image
+                        imagemap(ax[j], data[j], **kwargs)
+                        
+                        pt = int(shape_[-1]*0.1)
+                        ax[j].plot(shape_[-1]-pt-1,pt, marker='o', markeredgewidth=0.0, markersize=3,
+                                markerfacecolor=self.cmap((i+1)/generator_iters))
+
+                        axes_in = ax[j].inset_axes([0.55, 0.02, 0.43, 0.43])
+
+                        # plots the embedding and formats embedding
+                        imagemap(axes_in, 
+                                emb[:,channel].reshape(dset.meta['shape_list'][p][0][-4], 
+                                                        dset.meta['shape_list'][p][0][-3]), 
+                                colorbars=False)
+                        
+                        # adds labels to the figure
+                        if self.labelfigs_: labelfigs(ax[j], j, size=4, text_pos="center")
+
+                    if self.printer is not None:
+                        self.printer.savefig(fig,
+                                        f'{folder_name}/{p_name}/{i:04d}_maps', 
+                                        tight_layout=False, 
+                                        )
+                    plt.close(fig);
+        # he.close()
+        # hg.close()
             
   

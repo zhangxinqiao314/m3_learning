@@ -30,7 +30,7 @@ from sklearn.cluster import KMeans
 
 # sys.path.append(os.path.abspath("./../STEM_AE")) # or whatever the name of the immediate parent folder is
 
-class ConvAutoencoder():
+class ConvAutoencoder_2D():
     """builds the convolutional autoencoder
     """
 
@@ -44,8 +44,8 @@ class ConvAutoencoder():
                  device,
                  checkpoint = None,
                  learning_rate=3e-5,
-                 emb_h5_path = './Combined_all_samples/embeddings.h5',
-                 gen_h5_path = './Combined_all_samples/generated.h5',
+                 emb_h5_path = './Combined_all_samples_2D/embeddings_2D.h5',
+                 gen_h5_path = './Combined_all_samples_2D/generated_2D.h5',
                  ):
         """Initialization function
 
@@ -78,13 +78,20 @@ class ConvAutoencoder():
         self.compile_model()
 
     def open_embedding_h(self):
-        return h5py.File(self.emb_h5_path)
+        h = h5py.File(self.emb_h5_path,'r+')
+        try: 
+            check = self.checkpoint.split('/')[-1][:-4]
+            self.embedding = h[f'embedding_{check}']
+        except: pass
+        return h
     
     def open_generated_h(self):
-        return h5py.File(self.gen_h5_path)
-        # check = checkpoint.split('/')[-1][:-4]
-        # return h[check]
-    
+        h = h5py.File(self.gen_h5_path)
+        check = self.checkpoint.split('/')[-1][:-4]
+        try: self.generated = h[check]
+        except: pass
+        return h
+     
     def compile_model(self):
         """function that complies the neural network model
         """
@@ -103,11 +110,10 @@ class ConvAutoencoder():
             upsampling_list=self.upsampling_list,
             embedding_size=self.embedding_size,
             conv_size=self.conv_size,
-            pooling_list=self.pooling_list,
         ).to(self.device)
 
         # builds the autoencoder
-        self.autoencoder = AutoEncoder(
+        self.autoencoder = AutoEncoder_2D(
             self.encoder, self.decoder, self.embedding_size,
             device=self.device).to(self.device)
 
@@ -182,7 +188,7 @@ class ConvAutoencoder():
         if epoch_ is None:
             self.start_epoch = 0
         else:
-            self.start_epoch = epoch_+1
+            self.start_epoch = epoch_
 
         # training loop
         for epoch in range(self.start_epoch, N_EPOCHS):
@@ -203,37 +209,38 @@ class ConvAutoencoder():
             print('.............................')
 
           #  schedular.step()
-            if best_train_loss > train_loss:
-                best_train_loss = train_loss
-                checkpoint = {
-                    "net": self.autoencoder.state_dict(),
-                    'optimizer': self.optimizer.state_dict(),
-                    "epoch": epoch,
-                    "encoder": self.encoder.state_dict(),
-                    'decoder': self.decoder.state_dict(),
-                }
-                if epoch >= 0:
-                    lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
-                    file_path = folder_path + f'/{save_date}_' +\
-                        f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
-                        f'_trainloss:{train_loss:.4f}.pkl'
-                    torch.save(checkpoint, file_path)
+            # if best_train_loss > train_loss:
+            best_train_loss = train_loss
+            checkpoint = {
+                "net": self.autoencoder.state_dict(),
+                'optimizer': self.optimizer.state_dict(),
+                "epoch": epoch,
+                "encoder": self.encoder.state_dict(),
+                'decoder': self.decoder.state_dict(),
+            }
+            if epoch >= 0:
+                lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
+                file_path = folder_path + f'/{save_date}_' +\
+                    f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
+                    f'_trainloss:{train_loss:.4f}.pkl'
+                torch.save(checkpoint, file_path)
+                check = file_path.split('/')[-1][:-4]
+                self.checkpoint = check
 
-        if epoch%save_emb_every==0:
-            h = self.embedding.file
-            check = file_path.split('/')[-1][:-4]
-            h[f'embedding_{check}'] = h[f'embedding_temp']
-            h[f'scaleshear_{check}'] = h[f'scaleshear_temp']
-            h[f'rotation_{check}'] = h[f'rotation_temp'] 
-            h[f'translation_{check}'] = h[f'translation_temp']
-            self.embedding = h[f'embedding_{check}']
-            self.scale_shear = h[f'scaleshear_{check}']           
-            self.rotation = h[f'rotation_{check}']         
-            self.translation = h[f'translation_{check}']
-            del h[f'embedding_temp']         
-            del h[f'scaleshear_temp']          
-            del h[f'rotation_temp']          
-            del h[f'translation_temp']
+            if epoch%save_emb_every==0:
+                with self.open_embedding_h() as h:
+                    h[f'embedding_{check}'] = h[f'embedding_']
+                    h[f'scaleshear_{check}'] = h[f'embedding_']
+                    h[f'rotation_{check}'] = h[f'embedding_'] 
+                    h[f'translation_{check}'] = h[f'embedding_']
+                    self.embedding = h[f'embedding_{check}']
+                    self.scale_shear = h[f'scaleshear_{check}']           
+                    self.rotation = h[f'rotation_{check}']         
+                    self.translation = h[f'translation_{check}']
+                    # del h[f'embedding_']         
+                    # del h[f'embedding_']          
+                    # del h[f'embedding_']          
+                    # del h[f'embedding_']
                         
         if scheduler is not None:
             scheduler.step()
@@ -277,7 +284,7 @@ class ConvAutoencoder():
             # update the gradients to zero
             self.optimizer.zero_grad()
 
-            if beta is None: embedding, predicted_x = self.autoencoder(x)
+            if beta is None: embedding, predicted_x, scaler_shear,rotation,translation = self.autoencoder(x)
             else: embedding, sd, mn, predicted_x = self.autoencoder(x)
 
             reg_loss_1 = coef*torch.norm(embedding, ln_parm).to(self.device)/x.shape[0]
@@ -304,9 +311,9 @@ class ConvAutoencoder():
             
             # fill embedding if the correct epoch
             if fill_embeddings:
-                scale_shear,rotation,translation = self.autoencoder.temp_affines
+                # scaler_shear,rotation,translation = self.autoencoder.temp_affines
                 self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
-                self.scale_shear[sorted] = scale_shear[indices].cpu().reshape((-1,6)).detach().numpy()
+                self.scale_shear[sorted] = scaler_shear[indices].cpu().reshape((-1,6)).detach().numpy()
                 self.rotation[sorted] = rotation[indices].reshape((-1,6)).cpu().detach().numpy()
                 self.translation[sorted] = translation[indices].reshape((-1,6)).cpu().detach().numpy()
                 # print('\tt', abs(tic-toc)) # 2.7684452533721924
@@ -345,7 +352,7 @@ class ConvAutoencoder():
             print(error)
             print('Generated not opened')
 
-    def get_embedding(self, data, batch_size=32,train=True):
+    def get_embedding(self, data, batch_size=32,train=True, check = ''):
         """extracts embeddings from the data
 
         Args:
@@ -366,12 +373,13 @@ class ConvAutoencoder():
             except: 
                 h = h5py.File(self.emb_h5_path,'r+')
 
-            check = self.checkpoint.split('/')[-1][:-4]
+            try: check = self.checkpoint.split('/')[-1][:-4]
+            except: check = check
             try:
-                embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0], self.embedding_size]))
-                scale_shear_ = h.create_dataset(f'scaleshear_{check}', data = np.zeros([data.shape[0],6]))
-                rotation_ = h.create_dataset(f'rotation_{check}', data = np.zeros([data.shape[0],6]))
-                translation_ = h.create_dataset(f'translation_{check}', data = np.zeros([data.shape[0],6]))
+                embedding_ = h.create_dataset(f'embedding_{check}', data = np.zeros([data.shape[0][0], self.embedding_size]))
+                scale_shear_ = h.create_dataset(f'scaleshear_{check}', data = np.zeros([data.shape[0][0],6]))
+                rotation_ = h.create_dataset(f'rotation_{check}', data = np.zeros([data.shape[0][0],6]))
+                translation_ = h.create_dataset(f'translation_{check}', data = np.zeros([data.shape[0][0],6]))
             except: 
                 embedding_ = h[f'embedding_{check}']
                 scale_shear_ = h[f'scaleshear_{check}']
@@ -385,7 +393,7 @@ class ConvAutoencoder():
 
         except Exception as error:
             print(error) 
-            assert self.train,"No h5_dataset embedding dataset created"
+            # assert self.train,"No h5_dataset embedding dataset created"
             print('Warning: not saving to h5')
                 
         if train: 
@@ -406,8 +414,48 @@ class ConvAutoencoder():
                     self.rotation[i*batch_size:(i+1)*batch_size, :] = rotation.reshape(-1,6).cpu().detach().numpy()
                     self.translation[i*batch_size:(i+1)*batch_size, :] = translation.reshape(-1,6).cpu().detach().numpy()
         h.close()
+ 
+    def get_clusters(self,dset,scaled_array,n_components=None,n_clusters=None):
+        if n_components == None:
+            print('Getting scree plot...')
+            pca = PCA()
+            pca.fit(scaled_array)
+            plt.clf()
+            plt.plot(pca.explained_variance_ratio_.cumsum(),marker='o')
+            plt.show()
+            n_components = int(input("Choose number of PCA components: "))
+            
+        print(f'PCA with {n_components} components...')
+        pca = PCA(n_components)
+        transformed = pca.fit_transform(scaled_array)
+        
+        if n_clusters == None:
+            print('Getting elbow plot...')
+            wcss = []
+            for i in tqdm(range(10,self.stacked_embedding_size+7)):
+                kmeans_pca = KMeans(n_clusters=i,init='k-means++',random_state=42)
+                kmeans_pca.fit(transformed[::100])
+                wcss.append(kmeans_pca.inertia_)
+            plt.clf()
+            plt.plot(range(10,self.stacked_embedding_size+7),wcss,marker='o')
+            plt.show()
+            n_clusters = int(input('Choose number of clusters: '))
+            
+        print(f'Clustering with {n_clusters} clusters...')
+        kmeans_pca = KMeans(n_clusters=n_clusters,init='k-means++',random_state=42)
+        kmeans_pca.fit(transformed)
+        cluster_list = []
+        for i,particle in enumerate(dset.meta['particle_list']):
+            img = kmeans_pca.labels_[dset.meta['particle_inds'][i]:\
+                dset.meta['particle_inds'][i+1] ].reshape(dset.meta['shape_list'][i][0][0],
+                                                            dset.meta['shape_list'][i][0][1])
+            cluster_list.append(img)
+        self.cluster_list = cluster_list
+        self.cluster_labels = kmeans_pca.labels_
+        print('Done')
+        return cluster_list,kmeans_pca.labels_
 
-    def generate_range(self,meta,checkpoint,
+    def generate_range(self,dset,checkpoint,
                          ranges=None,
                          generator_iters=50,
                          averaging_number=100,
@@ -428,7 +476,7 @@ class ConvAutoencoder():
             shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
         """
 
-        assert not self.train, 'set self.train to False if calculating manually'
+        # assert not self.train, 'set self.train to False if calculating manually'
         # sets the kwarg values
         for key, value in kwargs.items():
             exec(f'{key} = value')
@@ -440,16 +488,16 @@ class ConvAutoencoder():
         if "ranges" in kwargs:
             ranges = kwargs["ranges"]
 
-        # gets the embedding if a specific embedding is not provided
-        try:
-            embedding = self.embedding
-        except Exception as error:
-            print(error)
-            assert False, 'Make sure model is set to appropriate embeddings first'
-
+        # # gets the embedding if a specific embedding is not provided
+        # try:
+        #     embedding = self.embedding
+        # except Exception as error:
+        #     print(error)
+        #     assert False, 'Make sure model is set to appropriate embeddings first'
+        s = dset.shape[0]    
         try: # try opening h5 file
             try: # make new file
-                h = h5py.File(self.gen_h5_path,'w')
+                h = h5py.File(self.gen_h5_path,'a')
             except: # open existing file
                 h = h5py.File(self.gen_h5_path,'r+')
 
@@ -457,10 +505,10 @@ class ConvAutoencoder():
             try: # make new dataset
                 if overwrite and check in h: del h[check]
                 self.generated = h.create_dataset(check,
-                                            data=np.zeros( [len(meta['particle_list']),
+                                            data=np.zeros( [len(dset.meta['particle_list']),
                                                             generator_iters,
                                                             len(channels),
-                                                            128,128] ) )
+                                                            s[2],s[3]] ) )
             except: # open existing dataset for checkpoint
                 self.generated = h[check]
                 
@@ -468,10 +516,11 @@ class ConvAutoencoder():
             print(error)
             assert False,"No h5_dataset generated dataset created"
 
-        for p,p_name in enumerate(meta['particle_list']): # each sample
+        for p,p_name in enumerate(dset.meta['particle_list']): # each sample
             print(p, p_name)
-            data=self.embedding[meta['particle_inds'][p]:\
-                                meta['particle_inds'][p+1]]
+            with self.open_embedding_h() as he:
+                data=self.embedding[dset.meta['particle_inds'][p]:\
+                                    dset.meta['particle_inds'][p+1]]
                 
             # loops around the number of iterations to generate
             for i in tqdm(range(generator_iters)):
@@ -502,7 +551,7 @@ class ConvAutoencoder():
                     gen_value[channel] = value[i]
 
                     # generates diffraction pattern
-                    self.generated[meta['particle_inds'][p]: meta['particle_inds'][p+1],i,j] =\
+                    self.generated[dset.meta['particle_inds'][p]: dset.meta['particle_inds'][p+1],i,j] =\
                         self.generate_spectra(gen_value).squeeze()       
         h.close()
 
@@ -525,10 +574,545 @@ class ConvAutoencoder():
         embedding = embedding.cpu().detach().numpy()
         return embedding
 
- 
-class ConvAutoencoder_Multimodal():
+
+class ConvAutoencoder_1D():
     """builds the convolutional autoencoder
     """
+
+    def __init__(self,
+                 encoder_step_size,
+                 pooling_list,
+                 decoder_step_size,
+                 upsampling_list,
+                 embedding_size,
+                 channels,
+                 conv_size,
+                 device,
+                 checkpoint = None,
+                 learning_rate=3e-5,
+                 emb_h5_path = './Combined_all_samples_1D/embeddings_1D.h5',
+                 gen_h5_path = './Combined_all_samples_1D/generated_1D.h5',
+                 ):
+        """Initialization function
+
+        Args:
+            encoder_step_size (list): sets the size of the encoder
+            pooling_list (list): sets the pooling list to define the pooling layers
+            decoder_step_size (list): sets the size of the decoder
+            upsampling_list (list): sets the size for upsampling
+            embedding_size (int): number of embedding channels
+            conv_size (int): sets the number of convolutional neurons in the model
+            device (torch.device): set the device to run the model
+            learning_rate (float, optional): sets the learning rate for the optimizer. Defaults to 3e-5.
+        """
+        self.encoder_step_size = encoder_step_size
+        self.pooling_list = pooling_list
+        self.decoder_step_size = decoder_step_size
+        self.upsampling_list = upsampling_list
+        self.embedding_size = embedding_size
+        self.conv_size = conv_size
+        self.device = device
+        self.learning_rate = learning_rate
+        self.channels = channels
+
+        self.checkpoint = checkpoint
+        # self.train = train
+
+        self.emb_h5_path = emb_h5_path
+        self.gen_h5_path = gen_h5_path
+
+        # complies the network
+        self.compile_model()
+
+    def open_embedding_h(self):
+        check = self.checkpoint.split('/')[-1][:-4]
+        h = h5py.File(self.emb_h5_path,'r+')
+        try:
+            self.embedding = h[f'embedding_{check}']
+        except:
+            pass
+        
+        return h
+    
+    def open_generated_h(self):
+        h = h5py.File(self.gen_h5_path)
+        check = self.checkpoint.split('/')[-1][:-4]
+        try: self.generated = h[check]
+        except: pass
+        return h
+    
+    def compile_model(self):
+        """function that complies the neural network model
+        """
+        # builds the encoder
+        self.encoder = Encoder_1D(
+            original_step_size=self.encoder_step_size,
+            pooling_list=self.pooling_list,
+            embedding_size=self.embedding_size,
+            conv_size=self.conv_size,
+            in_channels=self.channels,
+            device=self.device,
+            attn_heads=3
+        ).to(self.device)
+
+        # builds the decoder
+        self.decoder = Decoder_1D(
+            original_step_size=self.decoder_step_size,
+            upsampling_list=self.upsampling_list,
+            embedding_size=self.embedding_size,
+            conv_size=self.conv_size,
+            out_channels=self.channels,
+            attn_heads=3
+        ).to(self.device)
+
+        # builds the autoencoder
+        self.autoencoder = AutoEncoder_1D(
+            self.encoder, self.decoder, device=self.device).to(self.device)
+
+        # sets the optimizers
+        self.optimizer = optim.Adam(
+            self.autoencoder.parameters(), lr=self.learning_rate
+        )
+
+        # sets the datatype of the model to float32
+        self.autoencoder.type(torch.float32)
+
+    ## TODO: implement embedding calculation/unshuffler
+    def Train(self,
+              data,
+              max_learning_rate=1e-4,
+              coef_1=0,
+              coef_2=0,
+              coef_3=0,
+              seed=12,
+              epochs=100,
+              with_scheduler=True,
+              ln_parm=1,
+              epoch_=None,
+              folder_path='./',
+              batch_size=32,
+              best_train_loss=None,
+              save_emb_every=10):
+        """function that trains the model
+
+        Args:
+            data (torch.tensor): data to train the model
+            max_learning_rate (float, optional): sets the max learning rate for the learning rate cycler. Defaults to 1e-4.
+            coef_1 (float, optional): hyperparameter for ln loss. Defaults to 0.
+            coef_2 (float, optional): hyperparameter for contrastive loss. Defaults to 0.
+            coef_3 (float, optional): hyperparameter for divergency loss. Defaults to 0.
+            seed (int, optional): sets the random seed. Defaults to 12.
+            epochs (int, optional): number of epochs to train. Defaults to 100.
+            with_scheduler (bool, optional): sets if you should use the learning rate cycler. Defaults to True.
+            ln_parm (int, optional): order of the Ln regularization. Defaults to 1.
+            epoch_ (int, optional): current epoch for continuing training. Defaults to None.
+            folder_path (str, optional): path where to save the weights. Defaults to './'.
+            batch_size (int, optional): sets the batch size for training. Defaults to 32.
+            best_train_loss (float, optional): current loss value to determine if you should save the value. Defaults to None.
+            save_emb_every (int, optional): 
+        """
+        today = date.today()
+        save_date=today.strftime('(%Y-%m-%d)')
+        make_folder(folder_path)
+
+        # set seed
+        torch.manual_seed(seed)
+
+        # builds the dataloader
+        self.DataLoader_ = DataLoader(
+            data, batch_size=batch_size, shuffle=True)
+
+        # option to use the learning rate scheduler
+        if with_scheduler:
+            scheduler = torch.optim.lr_scheduler.CyclicLR(
+                self.optimizer, base_lr=self.learning_rate, max_lr=max_learning_rate, step_size_up=15, cycle_momentum=False)
+        else:
+            scheduler = None
+
+        # set the number of epochs
+        N_EPOCHS = epochs
+
+        # initializes the best train loss
+        if best_train_loss == None:
+            best_train_loss = float('inf')
+
+        # initialize the epoch counter
+        if epoch_ is None:
+            self.start_epoch = 0
+        else:
+            self.start_epoch = epoch_
+
+        # training loop
+        for epoch in range(self.start_epoch, N_EPOCHS):
+            fill_embeddings = False
+            if epoch % save_emb_every == 0: # tell loss function to give embedding
+                print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
+                print('.............................')
+                fill_embeddings = self.get_embedding(data, train=True)
+
+
+            train = self.loss_function(
+                self.DataLoader_, coef_1, coef_2, coef_3, ln_parm,
+                fill_embeddings=fill_embeddings)
+            train_loss = train
+            train_loss /= len(self.DataLoader_)
+            print(
+                f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {train_loss:.4f}')
+            print('.............................')
+
+          #  schedular.step()
+            if best_train_loss > train_loss:
+                best_train_loss = train_loss
+                checkpoint = {
+                    "net": self.autoencoder.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    "epoch": epoch,
+                    "encoder": self.encoder.state_dict(),
+                    'decoder': self.decoder.state_dict(),
+                }
+                if epoch >= 0:
+                    lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
+                    file_path = folder_path + f'/{save_date}_' +\
+                        f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
+                        f'_trainloss:{train_loss:.4f}.pkl'
+                    torch.save(checkpoint, file_path)
+
+            if epoch%save_emb_every==0:
+                h = self.embedding.file
+                check = file_path.split('/')[-1][:-4]
+                h[f'embedding_{check}'] = h[f'embedding_temp']
+                h[f'scaleshear_{check}'] = h[f'scaleshear_temp']
+                h[f'rotation_{check}'] = h[f'rotation_temp'] 
+                h[f'translation_{check}'] = h[f'translation_temp']
+                self.embedding = h[f'embedding_{check}']
+                self.scale_shear = h[f'scaleshear_{check}']           
+                self.rotation = h[f'rotation_{check}']         
+                self.translation = h[f'translation_{check}']
+                del h[f'embedding_temp']         
+                del h[f'scaleshear_temp']          
+                del h[f'rotation_temp']          
+                del h[f'translation_temp']
+                        
+        if scheduler is not None:
+            scheduler.step()
+
+    def loss_function(self,
+                      train_iterator,
+                      coef=0,
+                      coef1=0,
+                      coef2=0,
+                      ln_parm=1,
+                      beta=None,
+                      fill_embeddings=False):
+        """computes the loss function for the training
+
+        Args:
+            train_iterator (torch.Dataloader): dataloader for the training
+            coef (float, optional): Ln hyperparameter. Defaults to 0.
+            coef1 (float, optional): hyperparameter for contrastive loss. Defaults to 0.
+            coef2 (float, optional): hyperparameter for divergence loss. Defaults to 0.
+            ln_parm (float, optional): order of the regularization. Defaults to 1.
+            beta (float, optional): beta value for VAE. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
+        # set the train mode
+        self.autoencoder.train()
+
+        # loss of the epoch
+        train_loss = 0
+        con_l = ContrastiveLoss(coef1).to(self.device)
+        
+        for idx,x in tqdm(train_iterator, leave=True, total=len(train_iterator)):
+            # tic = time.time()
+
+            x = x.to(self.device, dtype=torch.float)
+            maxi_ = DivergenceLoss(x.shape[0], coef2).to(self.device)
+
+            # update the gradients to zero
+            self.optimizer.zero_grad()
+
+            if beta is None: embedding, predicted_x = self.autoencoder(x)
+            else: embedding, sd, mn, predicted_x = self.autoencoder(x)
+
+            reg_loss_1 = coef*torch.norm(embedding, ln_parm).to(self.device)/x.shape[0]
+            if reg_loss_1 == 0: reg_loss_1 = 0.5
+
+            contras_loss = con_l(embedding)
+            maxi_loss = maxi_(embedding)
+
+            # reconstruction loss
+            mask = (predicted_x!=0)
+            loss = F.mse_loss(x, predicted_x, reduction='mean');
+            loss = (loss*mask.float()).sum()
+            loss /= mask.sum()
+
+            loss = loss + reg_loss_1 + contras_loss - maxi_loss
+
+            train_loss += loss.item()
+
+            # backward pass
+            loss.backward()
+
+            # update the weights
+            self.optimizer.step()
+            
+            # fill embedding if the correct epoch
+            if fill_embeddings:
+                sorted, indices = torch.sort(idx)
+                sorted = sorted.detach().numpy()
+                self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
+                # print('\tt', abs(tic-toc)) # 2.7684452533721924
+
+        return train_loss
+
+    def load_weights(self, path_checkpoint):
+        """loads the weights from a checkpoint
+
+        Args:
+            path_checkpoint (str): path where checkpoints are saved 
+        """
+        self.checkpoint = path_checkpoint
+        checkpoint = torch.load(path_checkpoint)
+        self.autoencoder.load_state_dict(checkpoint['net'])
+        self.encoder.load_state_dict(checkpoint['encoder'])
+        self.decoder.load_state_dict(checkpoint['decoder'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.start_epoch = checkpoint['epoch']
+        check = path_checkpoint.split('/')[-1][:-4]
+
+        try:
+            with self.open_embedding_h() as h:
+                print('Generated available')
+        except Exception as error:
+            print(error)
+            print('Embeddings not opened')
+
+        try:
+            with self.open_generated_h() as h:
+                print('Generated available')
+        except Exception as error:
+            print(error)
+            print('Generated not opened')
+
+    def get_embedding(self, data, batch_size=32,train=True,check=''):
+        """extracts embeddings from the data
+
+        Args:
+            data (torch.tensor): data to get embeddings from
+            batch_size (int, optional): batchsize for inference. Defaults to 32.
+
+        Returns:
+            torch.tensor: predicted embeddings
+        """
+
+        # builds the dataloader
+        dataloader = DataLoader(data, batch_size, shuffle=False)
+
+        try:
+            try: h = h5py.File(self.emb_h5_path,'w')
+            except: h = h5py.File(self.emb_h5_path,'r+')
+
+            try: check = self.checkpoint.split('/')[-1][:-4]
+            except: check=check
+            
+            try:
+                embedding_ = h.create_dataset(f'embedding_{check}', 
+                                              data = np.zeros([data.shape[1][0], self.embedding_size]),
+                                              dtype='float32')
+            except: 
+                embedding_ = h[f'embedding_{check}']
+
+            self.embedding = embedding_
+
+        except Exception as error:
+            print(error) 
+            assert train,"No h5_dataset embedding dataset created"
+            print('Warning: not saving to h5')
+                
+        if train: 
+            print('Created empty h5 embedding datasets to fill during training')
+            return 1 # do not calculate. 
+            # return true to indicate this is filled during training
+
+        else:
+            for i, (_,x) in enumerate(tqdm(dataloader, leave=True, total=len(dataloader))):
+                with torch.no_grad():
+                    value = x
+                    test_value = Variable(value.to(self.device))
+                    test_value = test_value.float()
+                    embedding = self.encoder(test_value)
+                    
+                    self.embedding[i*batch_size:(i+1)*batch_size, :] = embedding.cpu().detach().numpy()
+                   
+        h.close()
+   
+    def get_clusters(self,dset,scaled_array,n_components=None,n_clusters=None):
+        if n_components == None:
+            print('Getting scree plot...')
+            pca = PCA()
+            pca.fit(scaled_array)
+            plt.clf()
+            plt.plot(pca.explained_variance_ratio_.cumsum(),marker='o')
+            plt.show()
+            n_components = int(input("Choose number of PCA components: "))
+            
+        print(f'PCA with {n_components} components...')
+        pca = PCA(n_components)
+        transformed = pca.fit_transform(scaled_array)
+        
+        if n_clusters == None:
+            print('Getting elbow plot...')
+            wcss = []
+            for i in tqdm(range(10,self.stacked_embedding_size+7)):
+                kmeans_pca = KMeans(n_clusters=i,init='k-means++',random_state=42)
+                kmeans_pca.fit(transformed[::100])
+                wcss.append(kmeans_pca.inertia_)
+            plt.clf()
+            plt.plot(range(10,self.stacked_embedding_size+7),wcss,marker='o')
+            plt.show()
+            n_clusters = int(input('Choose number of clusters: '))
+            
+        print(f'Clustering with {n_clusters} clusters...')
+        kmeans_pca = KMeans(n_clusters=n_clusters,init='k-means++',random_state=42)
+        kmeans_pca.fit(transformed)
+        cluster_list = []
+        for i,particle in enumerate(dset.meta['particle_list']):
+            img = kmeans_pca.labels_[dset.meta['particle_inds'][i]:\
+                dset.meta['particle_inds'][i+1] ].reshape(dset.meta['shape_list'][i][0][0],
+                                                            dset.meta['shape_list'][i][0][1])
+            cluster_list.append(img)
+        self.cluster_list = cluster_list
+        self.cluster_labels = kmeans_pca.labels_
+        print('Done')
+        return cluster_list,kmeans_pca.labels_
+
+    def generate_range(self,dset,checkpoint,
+                         ranges=None,
+                         generator_iters=50,
+                         averaging_number=100,
+                         overwrite=False,
+                         **kwargs
+                         ):
+        """Generates images as the variables traverse the latent space.
+        Saves to embedding h5 dataset
+
+        Args:
+            embedding (tensor, optional): embedding to predict with. Defaults to None.
+            folder_name (str, optional): name of folder where images are saved. Defaults to ''.
+            ranges (list, optional): sets the range to generate images over. Defaults to None.
+            generator_iters (int, optional): number of iterations to use in generation. Defaults to 200.
+            averaging_number (int, optional): number of embeddings to average. Defaults to 100.
+            graph_layout (list, optional): layout parameters of the graph (#graphs,#perrow). Defaults to [2, 2].
+            shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
+        """
+
+        # assert not self.train, 'set self.train to False if calculating manually'
+        # sets the kwarg values
+        for key, value in kwargs.items():
+            exec(f'{key} = value')
+
+        # sets the channels to use in the object
+        if "channels" in kwargs:
+            channels = kwargs["channels"]
+        else:
+            channels = np.arange(self.embedding_size)
+        
+        if "ranges" in kwargs:
+            ranges = kwargs["ranges"]
+
+        # gets the embedding if a specific embedding is not provided
+        try:
+            embedding = self.embedding
+        except Exception as error:
+            print(error)
+            assert False, 'Make sure model is set to appropriate embeddings first'
+
+        try: # try opening h5 file
+            try: # make new file
+                h = h5py.File(self.gen_h5_path,'w')
+            except: # open existing file
+                h = h5py.File(self.gen_h5_path,'r+')
+
+            check = checkpoint.split('/')[-1][:-4]
+            try: # make new dataset
+                if overwrite and check in h: del h[check]
+                self.generated = h.create_dataset(check,
+                                            shape=( len(dset.meta['particle_list']),
+                                                            generator_iters,
+                                                            len(channels), 
+                                                            dset.eels_chs,
+                                                            dset.spec_len),
+                                            dtype='float32') 
+            except: # open existing dataset for checkpoint
+                self.generated = h[check]
+                
+        except Exception as error: # cannot open h5
+            print(error)
+            assert False,"No h5_dataset generated dataset created"
+
+        for p,p_name in enumerate(dset.meta['particle_list']): # each sample
+            print(p, p_name)
+            with self.open_embedding_h() as he:
+                data=self.embedding[dset.meta['particle_inds'][p]:\
+                                    dset.meta['particle_inds'][p+1]].astype('float32')
+                
+            # loops around the number of iterations to generate
+            for i in tqdm(range(generator_iters)):
+
+                # loops around all of the embeddings
+                for j, channel in enumerate(channels):
+
+                    if ranges is None: # span this range when generating
+                        ranges = np.stack((np.min(data, axis=0),
+                                        np.max(data, axis=0)), axis=1)
+
+                    # linear space values for the embeddings
+                    value = np.linspace(ranges[j][0], ranges[j][1],
+                                        generator_iters)
+
+                    # finds the nearest points to the value and then takes the average
+                    # average number of points based on the averaging number
+                    idx = find_nearest(
+                        data[:,channel],
+                        value[i],
+                        averaging_number)
+
+                    # computes the mean of the selected index to yield 2D image
+                    gen_value = np.mean(data[idx], axis=0)
+
+                    # specifically updates the value of the mean embedding image to visualize 
+                    # based on the linear spaced vector
+                    gen_value[channel] = value[i]
+
+                    generated = self.generate_spectra(gen_value).squeeze()       
+                    # generates diffraction pattern
+                    self.generated[dset.meta['particle_inds'][p]: \
+                                   dset.meta['particle_inds'][p+1],i,j] = generated
+        h.close()
+
+        # return self.generated
+              
+    def generate_spectra(self, embedding):
+        """generates spectra from embeddings
+
+        Args:
+            embedding (torch.tensor): predicted embeddings to decode
+
+        Returns:
+            torch.tensor: decoded spectra
+        """
+
+        embedding = torch.from_numpy(np.atleast_2d(embedding).astype('float32')).to(self.device)
+        predicted_1D = self.decoder(embedding)
+        predicted_1D = predicted_1D.cpu().detach().numpy()
+        return predicted_1D
+
+
+class ConvAutoencoder_Multimodal():
+    """builds the convolutional autoencoder
+    """# TODO: decorator and setters for self.autoencoder.*stuff*
 
     def __init__(self,
                  encoder_step_size_1D,
@@ -692,7 +1276,7 @@ class ConvAutoencoder_Multimodal():
               folder_path='./',
               batch_size=32,
               best_train_loss=None,
-              save_emb_every=10):
+              save_emb_every=1):
         """function that trains the model
 
         Args:
@@ -741,25 +1325,23 @@ class ConvAutoencoder_Multimodal():
         if epoch_ is None:
             self.start_epoch = 0
         else:
-            self.start_epoch = epoch_+1
+            self.start_epoch = epoch_
 
         # training loop
         for epoch in range(self.start_epoch, N_EPOCHS):
-            
             fill_embeddings = False
             if epoch % save_emb_every ==0: # tell loss function to give embedding every however many epochs
                 print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
                 print('.............................')
-                fill_embeddings = self.get_embedding(data, check='temp', no_calculate=True)
-
+                fill_embeddings = self.get_embedding(data, check=f'temp_{epoch}', no_calculate=True)
 
             train_dict = self.loss_function(
                 self.DataLoader_, coef_1, coef_2, coef_3, ln_parm,
                 fill_embeddings=fill_embeddings)
             train_dict = {key: value / len(self.DataLoader_) for key, value in train_dict.items()}
             train_loss = sum([val for val in train_dict.values()])
-            print(
-                f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {train_loss:.4f}')
+            
+            print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {train_loss:.4f}')
             print('.............................')
 
           #  schedular.step()
@@ -781,24 +1363,26 @@ class ConvAutoencoder_Multimodal():
                     f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
                     f'_trainloss:{train_loss:.4f}.pkl'
                 torch.save(checkpoint, file_path)
+                self.checkpoint = file_path
 
-            if epoch%save_emb_every==0:
-                h = self.embedding.file
-                check = file_path.split('/')[-1][:-4]
-                h[f'embedding_{check}'] = h[f'embedding_temp'] # combined embedding
-                h[f'scaleshear_{check}'] = h[f'scaleshear_temp']
-                h[f'rotation_{check}'] = h[f'rotation_temp'] 
-                h[f'translation_{check}'] = h[f'translation_temp']
-                self.embedding = h[f'embedding_{check}']
-                self.scale_shear = h[f'scaleshear_{check}']           
-                self.rotation = h[f'rotation_{check}']         
-                self.translation = h[f'translation_{check}']
-                del h[f'embedding_temp']         
-                del h[f'scaleshear_temp']          
-                del h[f'rotation_temp']          
-                del h[f'translation_temp']
-                h.flush()
-                h.close()
+            if epoch%save_emb_every==0: #TODO: why isn't this saving properly?
+                with self.open_embedding_h() as h:
+                    check = file_path.split('/')[-1][:-4]
+                    h[f'embedding_{check}'] = h[f'embedding_temp'] # combined embedding
+                    h[f'scaleshear_{check}'] = h[f'scaleshear_temp']
+                    h[f'rotation_{check}'] = h[f'rotation_temp'] 
+                    h[f'translation_{check}'] = h[f'translation_temp']
+                    self.embedding = h[f'embedding_{check}']
+                    self.scale_shear = h[f'scaleshear_{check}']           
+                    self.rotation = h[f'rotation_{check}']         
+                    self.translation = h[f'translation_{check}']
+                    del h[f'embedding_temp']         
+                    del h[f'scaleshear_temp']          
+                    del h[f'rotation_temp']          
+                    del h[f'translation_temp']
+                    print(f'saved {check} ')
+                    # h.flush()
+                    # h.close()
                         
         if scheduler is not None:
             scheduler.step()
@@ -884,12 +1468,14 @@ class ConvAutoencoder_Multimodal():
             
             # fill embedding if the correct epoch
             if fill_embeddings:
-                # scale_shear,rotation,translation = self.autoencoder.temp_affines
-                self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
-                self.scale_shear[sorted] = scale_shear[indices].cpu().reshape((-1,6)).detach().numpy()
-                self.rotation[sorted] = rotation[indices].reshape((-1,6)).cpu().detach().numpy()
-                self.translation[sorted] = translation[indices].reshape((-1,6)).cpu().detach().numpy()
-                # print('\tt', abs(tic-toc)) # 2.7684452533721924
+                with self.open_embedding_h() as h:
+                    # scale_shear,rotation,translation = self.autoencoder.temp_affines
+                    self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
+                    self.scale_shear[sorted] = scale_shear[indices].cpu().reshape((-1,6)).detach().numpy()
+                    self.rotation[sorted] = rotation[indices].reshape((-1,6)).cpu().detach().numpy()
+                    self.translation[sorted] = translation[indices].reshape((-1,6)).cpu().detach().numpy()
+                    # print('\tt', abs(tic-toc)) # 2.7684452533721924
+                    h.flush()
 
         return loss_dict
 
@@ -977,10 +1563,9 @@ class ConvAutoencoder_Multimodal():
             # return true to indicate this is filled during training
 
         else:
-            # self.autoencoder.get_embeddings = True
+            self.autoencoder.get_embeddings = True
             for x in tqdm(dataloader, leave=True, total=len(dataloader)):
                 with torch.no_grad():
-                    self.autoencoder.get_embeddings = True
                     i=x[0].detach().numpy()
                     test_values = [Variable(x[1].to(self.device)).float(), 
                                    Variable(x[2].to(self.device)).float() ]
@@ -1178,9 +1763,6 @@ class ConvAutoencoder_Multimodal():
         # gets the embedding if a specific embedding is not provided
         try:
             embedding = self.embedding
-            scale_shear = self.scale_shear
-            rotation = self.rotation
-            translation = self.translation
         except Exception as error:
             print(error)
             assert False, 'Make sure model is set to appropriate embeddings first'
@@ -1239,7 +1821,7 @@ class ConvAutoencoder_Multimodal():
                         value[i],
                         averaging_number)
 
-                    # computes the mean of the selected index to yield 2D image
+                    # computes the mean of the selected index across embeddings shp (1,emb_size)
                     gen_value = np.mean(data[idx], axis=0)
 
                     # specifically updates the value of the mean embedding image to visualize 
@@ -1264,11 +1846,13 @@ class ConvAutoencoder_Multimodal():
         """
 
         embedding = torch.from_numpy(np.atleast_2d(embedding)).to(self.device)
-        embedding = self.decoder(embedding.float())
+        predicted_1D = self.dec_1D(embedding)
+        predicted_2D = self.dec_2D(embedding)
         if with_affine:
-            embedding = self.transformer(embedding)
-        embedding = embedding.cpu().detach().numpy()
-        return embedding
+            predicted_2D = self.transformer(predicted_2D)
+        predicted_1D = predicted_1D.cpu().detach().numpy()
+        predicted_2D = predicted_2D.cpu().detach().numpy()
+        return predicted_1D,predicted_2D
 
        
 class ConvBlock_1D(nn.Module):
@@ -1666,6 +2250,7 @@ class Encoder_2D(nn.Module):
 
         return selection,scaler_shear, rotation, translation
 
+
 class Decoder_1D(nn.Module):
     """Decoder class
 
@@ -1954,57 +2539,54 @@ class Affine_Transform(nn.Module):
 
 ## TODO: adjust transformer class so we can apply transforms during decoding
 class Transformer(nn.Module):
-#     def __init__(self,device):
-#         """AutoEncoder model
+    def __init__(self,device):
+        """AutoEncoder model
 
-#         Args:
-#             enc (nn.Module): Encoder block
-#             dec (nn.Module): Decoder block
-#         """
-#         super().__init__()
-#         self.device = device
+        Args:
+            enc (nn.Module): Encoder block
+            dec (nn.Module): Decoder block
+        """
+        super().__init__()
+        self.device = device
 
-#     def forward(self, x):
-#         """Forward pass of the autoencoder applies and affine grid to the decoder value
+    
+    def forward(self, predicted, scaler_shear, rotation, translation):
+        """Forward pass of the autoencoder applies and affine grid to the decoder value
 
-#         Args:
-#             x (Tensor): Input (training data)
+        Args:
+            x (Tensor): Input (training data)
 
-#         Returns:
-#             embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
-#         """
-#         predicted,affines = x
-#         scaler_shear,rotation,translation = affines
+        Returns:
+            embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
+        """
+        # predicted,affines = x
+        # scaler_shear,rotation,translation = affines
         
-#         # sample and apply affine grids
-#         size_grid = torch.ones([predicted.shape[0], 1, 
-#                                 predicted.shape[-2], 
-#                                 predicted.shape[-1]])
+        # sample and apply affine grids
+        size_grid = torch.ones([predicted.shape[0], 1, 
+                                predicted.shape[-2], 
+                                predicted.shape[-1]])
 
-#         grid_1 = F.affine_grid(scaler_shear.to(self.device), 
-#                                 size_grid.size()).to(self.device) # scale shear
-#         grid_2 = F.affine_grid(rotation.to(self.device), 
-#                                 size_grid.size()).to(self.device) # rotation
-#         grid_3 = F.affine_grid(translation.to(self.device), 
-#                                 size_grid.size()).to(self.device) # translation
+        grid_1 = F.affine_grid(scaler_shear.to(self.device), 
+                                size_grid.size()).to(self.device) # scale shear
+        grid_2 = F.affine_grid(rotation.to(self.device), 
+                                size_grid.size()).to(self.device) # rotation
+        grid_3 = F.affine_grid(translation.to(self.device), 
+                                size_grid.size()).to(self.device) # translation
         
-#         predicted = F.grid_sample(predicted,grid_3) # translation first to center
-#         predicted = F.grid_sample(predicted,grid_1)
-#         predicted = F.grid_sample(predicted,grid_2)
+        predicted = F.grid_sample(predicted,grid_3) # translation first to center
+        predicted = F.grid_sample(predicted,grid_1)
+        predicted = F.grid_sample(predicted,grid_2)
 
-#         return predicted
+        return predicted
     pass
         
         
-
 class AutoEncoder(nn.Module):
     def __init__(self, 
-                 enc_1D,
-                 enc_2D,
-                 dec_1D,
-                 dec_2D,
-                 stacked_size,
-                 emb_size,
+                 enc_1D, enc_2D,
+                 dec_1D, dec_2D,
+                 stacked_size, emb_size,
                  device,
                  get_embeddings=False,
                  training=True,
@@ -2032,7 +2614,15 @@ class AutoEncoder(nn.Module):
         self.dense = nn.Linear(stacked_size,emb_size)
         self.relu = nn.ReLU()
         self.temp_affines=None
-        # self.transformer = Transformer(self.device)
+        self.transformer = Transformer(self.device)
+        
+        @property
+        def get_embeddings(self):
+            return self._compute_embeddings
+
+        @get_embeddings.setter
+        def get_embeddings(self, value):
+            self._compute_embeddings = value
 
     def forward(self, x):
         """Forward pass of the autoencoder applies and affine grid to the decoder value
@@ -2065,17 +2655,19 @@ class AutoEncoder(nn.Module):
             if not self.training:
                 return predicted_1D, predicted_2D
 
-### make Transform class?
-        # sample and apply affine grids
-        size_grid = torch.ones([predicted_2D.shape[0],1,predicted_2D.shape[-2],predicted_2D.shape[-1]])
+# ### make Transform class? ##TODO: figure out how to do this if we use kwargs
+#         # sample and apply affine grids
+#         size_grid = torch.ones([predicted_2D.shape[0],1,predicted_2D.shape[-2],predicted_2D.shape[-1]])
 
-        grid_1 = F.affine_grid(scaler_shear.to(self.device), size_grid.size()).to(self.device) # scale shear
-        grid_2 = F.affine_grid(rotation.to(self.device), size_grid.size()).to(self.device) # rotation
-        grid_3 = F.affine_grid(translation.to(self.device), size_grid.size()).to(self.device) # translation
+#         grid_1 = F.affine_grid(scaler_shear.to(self.device), size_grid.size()).to(self.device) # scale shear
+#         grid_2 = F.affine_grid(rotation.to(self.device), size_grid.size()).to(self.device) # rotation
+#         grid_3 = F.affine_grid(translation.to(self.device), size_grid.size()).to(self.device) # translation
 
-        predicted_2D = F.grid_sample(predicted_2D,grid_3) # translation first (ideally to center)
-        predicted_2D = F.grid_sample(predicted_2D,grid_1) # scale shear
-        predicted_2D = F.grid_sample(predicted_2D,grid_2) # rotation
+#         predicted_2D = F.grid_sample(predicted_2D,grid_3) # translation first (ideally to center)
+#         predicted_2D = F.grid_sample(predicted_2D,grid_1) # scale shear
+#         predicted_2D = F.grid_sample(predicted_2D,grid_2) # rotation
+        
+        predicted_2D = self.transformer(predicted_2D,scaler_shear,rotation,translation)
 ### 
         if self.generator_mode=='affine':
             if self.training: 
@@ -2084,6 +2676,140 @@ class AutoEncoder(nn.Module):
                 return predicted_1D, predicted_2D 
         
         assert False, 'set train to True/False, and generator_mode to affine/no_affine'
+
+     
+class AutoEncoder_1D(nn.Module):
+    def __init__(self, enc_1D, dec_1D,
+                 device, get_embeddings=False,
+                 training=True ):
+        """AutoEncoder model
+
+        Args:
+            enc (nn.Module): Encoder block
+            dec (nn.Module): Decoder block
+            emb_size ():
+            device():
+            training (bool): If we are training, return embeddings for writing. If generating, return predicted only
+            mode (str): {'affine','no_affine'} whether or not you want to apply affine transform at end
+        """
+        super().__init__()
+        self.device = device
+        self.enc_1D = enc_1D
+        self.dec_1D = dec_1D
+        self.get_embeddings=get_embeddings
+        self.training = training
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        """Forward pass of the autoencoder applies and affine grid to the decoder value
+
+        Args:
+            x (tuple of Tensor): (diffraction, spectrum) (training data)
+
+       Returns:
+            embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
+        """
+        
+        embedding = self.enc_1D(x) # (batchsize, emb1dsize)
+        embedding = self.relu(embedding)
+        if self.get_embeddings: 
+            return embedding
+        
+        predicted_1D = self.dec_1D(embedding)
+        
+        # if we do not apply affine transforms, return either the embedding or predicted, 
+        # based on whether we are writing to embedding file directly during training
+        if self.training: # writing embedding in real time while training
+            return embedding,predicted_1D
+        if not self.training:
+            return predicted_1D
+
+
+class AutoEncoder_2D(nn.Module):
+    def __init__(self, enc_2D, dec_2D,
+                 emb_size, device,
+                 get_embeddings=False,
+                 training=True,
+                 generator_mode='affine'):
+        """AutoEncoder model
+
+        Args:
+            enc (nn.Module): Encoder block
+            dec (nn.Module): Decoder block
+            emb_size ():
+            device():
+            training (bool): If we are training, return embeddings for writing. If generating, return predicted only
+            mode (str): {'affine','no_affine'} whether or not you want to apply affine transform at end
+        """
+        super().__init__()
+        self.device = device
+        self.enc_2D = enc_2D
+        self.dec_2D = dec_2D
+        self.temp_affines = None # for filling embedding info
+        self.get_embeddings=get_embeddings
+        self.training = training
+        self.generator_mode = generator_mode
+        self.relu = nn.ReLU()
+        self.temp_affines=None
+        self.transformer = Transformer(self.device)
+        
+        @property
+        def get_embeddings(self):
+            return self._compute_embeddings
+
+        @get_embeddings.setter
+        def get_embeddings(self, value):
+            self._compute_embeddings = value
+
+    def forward(self, x):
+        """Forward pass of the autoencoder applies and affine grid to the decoder value
+
+        Args:
+            x (tuple of Tensor): (diffraction, spectrum) (training data)
+
+       Returns:
+            embedding, predicted (Tuple: Tensor): embedding and generated image with affine transforms applied 
+        """
+        diff = x
+        
+        embedding,scaler_shear,rotation,translation = self.enc_2D(diff) # (batchsize, emb2dsize)
+        embedding = self.relu(embedding)
+        if self.get_embeddings: 
+            return embedding,scaler_shear,rotation,translation
+        
+        predicted_2D = self.dec_2D(embedding).unsqueeze(1)
+        self.temp_affines = scaler_shear,rotation,translation # for writing to embedding during training
+        
+        # if we do not apply affine transforms, return either the embedding or predicted, 
+        # based on whether we are writing to embedding file directly during training
+        if self.generator_mode=='no_affine':
+            if self.training: # writing embedding in real time while training
+                return embedding, predicted_2D # .squeeze() ?
+            if not self.training:
+                return predicted_2D
+
+# ### make Transform class? ##TODO: figure out how to do this if we use kwargs
+#         # sample and apply affine grids
+#         size_grid = torch.ones([predicted_2D.shape[0],1,predicted_2D.shape[-2],predicted_2D.shape[-1]])
+
+#         grid_1 = F.affine_grid(scaler_shear.to(self.device), size_grid.size()).to(self.device) # scale shear
+#         grid_2 = F.affine_grid(rotation.to(self.device), size_grid.size()).to(self.device) # rotation
+#         grid_3 = F.affine_grid(translation.to(self.device), size_grid.size()).to(self.device) # translation
+
+#         predicted_2D = F.grid_sample(predicted_2D,grid_3) # translation first (ideally to center)
+#         predicted_2D = F.grid_sample(predicted_2D,grid_1) # scale shear
+#         predicted_2D = F.grid_sample(predicted_2D,grid_2) # rotation
+        
+        predicted_2D = self.transformer(predicted_2D,scaler_shear,rotation,translation)
+### 
+        if self.generator_mode=='affine':
+            if self.training: 
+                return embedding, predicted_2D, scaler_shear,rotation,translation
+            if not self.training: 
+                return predicted_2D 
+        
+        assert False, 'set train to True/False, and generator_mode to affine/no_affine'
+
 
 def db_show_im(tensor):
     import matplotlib.pyplot as plt
