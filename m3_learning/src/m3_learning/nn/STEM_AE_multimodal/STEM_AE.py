@@ -1855,6 +1855,8 @@ class ConvAutoencoder_Multimodal():
         return predicted_1D,predicted_2D
 
        
+       
+       
 class ConvBlock_1D(nn.Module):
     """Convolutional Block with 3 convolutional layers, 1 layer normalization layer with ReLU and ResNet
 
