@@ -19,7 +19,7 @@ def make_folder(folder, **kwargs):
         string: path to folder
     """
     # Makes folder
-    os.makedirs(folder, exist_ok=True)
+    os.makedirs(folder, exist_ok=True) # why so slow?
 
     return folder
 

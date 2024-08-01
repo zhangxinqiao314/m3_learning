@@ -1,27 +1,34 @@
 import sys
 import os
+from os.path import join as pjoin
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from os.path import join as pjoin
 from torch.utils.data import Dataset, DataLoader
-from m3_learning.nn.Regularization.Regularizers import ContrastiveLoss, DivergenceLoss
-from tqdm import tqdm
-from m3_learning.util.file_IO import make_folder
 import torch.nn.functional as F
 from torch.autograd import Variable
-import numpy as np
-import h5py
+
+from m3_learning.nn.Regularization.Regularizers import ContrastiveLoss, DivergenceLoss
+from m3_learning.nn.random import random_seed
+from m3_learning.optimizers.AdaHessian import AdaHessian
+from m3_learning.util.file_IO import make_folder
+from m3_learning.viz.layout import find_nearest
+from m3_learning.viz.nn import get_theta
+
 import warnings 
 warnings.filterwarnings("ignore")
-from m3_learning.viz.layout import find_nearest
+from tqdm import tqdm
+import numpy as np
+import h5py
 import time
 from datetime import date
+
 from sklearn.preprocessing import StandardScaler
-from m3_learning.viz.nn import get_theta
-import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+
+import matplotlib.pyplot as plt
 
 ## TODO: add 1d version of all classes, with Attention
 ## TODO: add make sure we can easily access rotations and run encoder/decoder separately
@@ -1110,6 +1117,578 @@ class ConvAutoencoder_1D():
         return predicted_1D
 
 
+class FitterAutoencoder_1D():
+    
+    # def __init__(self,
+    #              encoder_step_size,
+    #              pooling_list,
+    #              decoder_step_size,
+    #              upsampling_list,
+    #              embedding_size,
+    #              channels,
+    #              conv_size,
+    #              device,
+    #              checkpoint = None,
+    #              learning_rate=3e-5,
+    #              emb_h5_path = './Combined_all_samples_1D/embeddings_1D.h5',
+    #              gen_h5_path = './Combined_all_samples_1D/generated_1D.h5',
+    #              ):
+    #     """Initialization function
+
+    #     Args:
+    #         encoder_step_size (list): sets the size of the encoder
+    #         pooling_list (list): sets the pooling list to define the pooling layers
+    #         decoder_step_size (list): sets the size of the decoder
+    #         upsampling_list (list): sets the size for upsampling
+    #         embedding_size (int): number of embedding channels
+    #         conv_size (int): sets the number of convolutional neurons in the model
+    #         device (torch.device): set the device to run the model
+    #         learning_rate (float, optional): sets the learning rate for the optimizer. Defaults to 3e-5.
+    #     """
+    #     self.encoder_step_size = encoder_step_size
+    #     self.pooling_list = pooling_list
+    #     self.decoder_step_size = decoder_step_size
+    #     self.upsampling_list = upsampling_list
+    #     self.embedding_size = embedding_size
+    #     self.conv_size = conv_size
+    #     self.device = device
+    #     self.learning_rate = learning_rate
+    #     self.channels = channels
+        
+    def __init__(self,function, dset, input_channels, num_params, num_fits, limits=[1,975,25,1,25,1], scaler=None, 
+                 post_processing=None, device="cuda", 
+                 loops_scaler=None, flatten_from=1, 
+                 x1_ch_list=[8,6,4], x1_pool=64, 
+                 x2_pool_list=[16,8,4], x2_ch_list=[8,16],
+                 dense_list=[24,16,8],
+                 checkpoint = None,
+                 learning_rate=3e-5,
+                 emb_h5_path = './Combined_all_samples_1D_PV/embeddings_1D.h5',
+                 gen_h5_path = './Combined_all_samples_1D_PV/generated_1D.h5',):
+        """_summary_
+
+        Args:
+            function (_type_): _description_
+            x_data (_type_): _description_
+            input_channels (_type_): number of channels in orig data. ex. 2 channels: high loss, low loss
+            num_params (_type_): number of parameters needed to generate the fit
+            num_fits (_type_): the number of peaks to include
+            limits (list): values of [A_g, x, sigma, A_l, gamma, nu]. Defaults to: [1,975,25,1,25,1]
+            scaler (_type_, optional): _description_. Defaults to None.
+            post_processing (_type_, optional): _description_. Defaults to None.
+            device (str, optional): _description_. Defaults to "cuda".
+            loops_scaler (_type_, optional): _description_. Defaults to None.
+            flatten_from (int, optional): _description_. Defaults to 1.
+        """        
+
+        self.input_channels = input_channels
+        self.scaler = scaler
+        self.function = function
+        self.dset = dset
+        self.post_processing = post_processing
+        self.device = device
+        self.num_params = num_params
+        self.num_fits = num_fits
+        self.limits = limits
+        self.loops_scaler = loops_scaler
+        self.flat_dim = flatten_from
+        self.learning_rate = learning_rate
+
+        self.checkpoint = checkpoint
+        # self.train = train
+
+        self.emb_h5_path = emb_h5_path
+        self.gen_h5_path = gen_h5_path
+
+        # complies the network
+        self.compile_model()
+
+    def open_embedding_h(self):
+        check = self.checkpoint.split('/')[-1][:-4]
+        h = h5py.File(self.emb_h5_path,'r+')
+        try:
+            self.embedding = h[f'embedding_{check}']
+        except:
+            pass
+        
+        return h
+    
+    def open_generated_h(self):
+        h = h5py.File(self.gen_h5_path)
+        check = self.checkpoint.split('/')[-1][:-4]
+        try: self.generated = h[check]
+        except: pass
+        return h
+    
+    def compile_model(self):
+        """function that complies the neural network model
+        """
+        self.Fitter = Multiscale1DFitter(function=self.function,
+                                 x_data = self.dset,
+                                 input_channels=self.dset.eels_chs,
+                                 num_params=self.num_params,
+                                 num_fits=self.num_fits,
+                                 limits=self.limits,
+                                 device='cuda:0',
+                                 flatten_from = 1,
+                            )
+        self.Fitter = self.Fitter.to(self.device)
+        # sets the datatype of the model to float32
+        self.Fitter.type(torch.float32)
+
+        # sets the optimizers
+        self.optimizer = optim.Adam(
+            self.Fitter.parameters(), lr=self.learning_rate
+        )
+
+    ## TODO: implement embedding calculation/unshuffler
+    def Train(self,
+              data,
+              max_learning_rate=1e-4,
+              coef_1=0,
+              coef_2=0,
+              coef_3=0,
+              seed=12,
+              epochs=100,
+              with_scheduler=True,
+              ln_parm=1,
+              epoch_=None,
+              folder_path='./',
+              batch_size=32,
+              best_train_loss=None,
+              save_emb_every=None):
+        """function that trains the model
+
+        Args:
+            data (torch.tensor): data to train the model
+            max_learning_rate (float, optional): sets the max learning rate for the learning rate cycler. Defaults to 1e-4.
+            coef_1 (float, optional): hyperparameter for ln loss. Defaults to 0.
+            coef_2 (float, optional): hyperparameter for contrastive loss. Defaults to 0.
+            coef_3 (float, optional): hyperparameter for divergency loss. Defaults to 0.
+            seed (int, optional): sets the random seed. Defaults to 12.
+            epochs (int, optional): number of epochs to train. Defaults to 100.
+            with_scheduler (bool, optional): sets if you should use the learning rate cycler. Defaults to True.
+            ln_parm (int, optional): order of the Ln regularization. Defaults to 1.
+            epoch_ (int, optional): current epoch for continuing training. Defaults to None.
+            folder_path (str, optional): path where to save the weights. Defaults to './'.
+            batch_size (int, optional): sets the batch size for training. Defaults to 32.
+            best_train_loss (float, optional): current loss value to determine if you should save the value. Defaults to None.
+            save_emb_every (int, optional): 
+        """
+        today = date.today()
+        save_date=today.strftime('(%Y-%m-%d)')
+        make_folder(folder_path)
+
+        # set seed
+        torch.manual_seed(seed)
+
+        # builds the dataloader
+        self.DataLoader_ = DataLoader(
+            self.dset, batch_size=batch_size, shuffle=True)
+
+        # option to use the learning rate scheduler
+        if with_scheduler:
+            scheduler = torch.optim.lr_scheduler.CyclicLR(
+                self.optimizer, base_lr=self.learning_rate, max_lr=max_learning_rate, step_size_up=15, cycle_momentum=False)
+        else:
+            scheduler = None
+
+        # set the number of epochs
+        N_EPOCHS = epochs
+
+        # initializes the best train loss
+        if best_train_loss == None:
+            best_train_loss = float('inf')
+
+        # initialize the epoch counter
+        if epoch_ is None:
+            self.start_epoch = 0
+        else:
+            self.start_epoch = epoch_
+
+        # training loop
+        for epoch in range(self.start_epoch, N_EPOCHS):
+            fill_embeddings = False
+            if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
+                print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
+                print('.............................')
+                fill_embeddings = self.get_embedding(data, train=True)
+
+
+            train = self.loss_function(
+                self.DataLoader_, coef_1, coef_2, coef_3, ln_parm,
+                fill_embeddings=fill_embeddings)
+            train_loss = train
+            train_loss /= len(self.DataLoader_)
+            print(
+                f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {train_loss:.4f}')
+            print('.............................')
+
+          #  schedular.step()
+            lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
+            if best_train_loss > train_loss:
+                best_train_loss = train_loss
+                self.checkpoint = folder_path + f'/{save_date}_' +\
+                    f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
+                    f'_trainloss:{train_loss:.4f}.pkl'
+                self.save_checkpoint(epoch)
+
+            if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
+                h = self.embedding.file
+                check = self.checkpoint.split('/')[-1][:-4]
+                h[f'embedding_{check}'] = h[f'embedding_temp']
+                h[f'scaleshear_{check}'] = h[f'scaleshear_temp']
+                h[f'rotation_{check}'] = h[f'rotation_temp'] 
+                h[f'translation_{check}'] = h[f'translation_temp']
+                self.embedding = h[f'embedding_{check}']
+                self.scale_shear = h[f'scaleshear_{check}']           
+                self.rotation = h[f'rotation_{check}']         
+                self.translation = h[f'translation_{check}']
+                del h[f'embedding_temp']         
+                del h[f'scaleshear_temp']          
+                del h[f'rotation_temp']          
+                del h[f'translation_temp']
+                        
+        if scheduler is not None:
+            scheduler.step()
+
+    def save_checkpoint(self,epoch):
+        checkpoint = {
+            "Fitter": self.Fitter.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            "epoch": epoch,
+        }
+        torch.save(checkpoint, self.checkpoint)
+
+    def loss_function(self,
+                      train_iterator,
+                      coef=0,
+                      coef1=0,
+                      coef2=0,
+                      ln_parm=1,
+                      beta=None,
+                      fill_embeddings=False):
+        """computes the loss function for the training
+
+        Args:
+            train_iterator (torch.Dataloader): dataloader for the training
+            coef (float, optional): Ln hyperparameter. Defaults to 0.
+            coef1 (float, optional): hyperparameter for contrastive loss. Defaults to 0.
+            coef2 (float, optional): hyperparameter for divergence loss. Defaults to 0.
+            ln_parm (float, optional): order of the regularization. Defaults to 1.
+            beta (float, optional): beta value for VAE. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
+        # set the train mode
+        self.Fitter.train()
+
+        # loss of the epoch
+        train_loss = 0
+        con_l = ContrastiveLoss(coef1).to(self.device)
+        
+        for idx,x in tqdm(train_iterator, leave=True, total=len(train_iterator)):
+            # tic = time.time()
+
+            x = x.to(self.device, dtype=torch.float)
+            maxi_ = DivergenceLoss(x.shape[0], coef2).to(self.device)
+
+            # update the gradients to zero
+            self.optimizer.zero_grad()
+
+            if beta is None: embedding, predicted_x = self.Fitter(x)
+            else: embedding, sd, mn, predicted_x = self.Fitter(x)
+
+            if coef > 0: reg_loss_1 = coef*torch.norm(embedding[:,:,[0,3]], ln_parm).to(self.device)/x.shape[0]
+            else: reg_loss_1 = 0
+
+            contras_loss = con_l(embedding[:,:,:1])
+            maxi_loss = maxi_(embedding[:,:,:1])
+
+            # reconstruction loss
+            mask = (x!=0) # only compare with non0 eels. Otherwise, too noisy and biased
+            loss = F.mse_loss(x, predicted_x, reduction='mean');
+            loss = (loss*mask.float()).sum()
+            loss /= mask.sum()
+
+            loss = loss + reg_loss_1 + contras_loss - maxi_loss
+
+            train_loss += loss.item()
+
+            # backward pass
+            loss.backward()
+
+            # update the weights
+            self.optimizer.step()
+            
+            # fill embedding if the correct epoch
+            if fill_embeddings:
+                sorted, indices = torch.sort(idx)
+                sorted = sorted.detach().numpy()
+                self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
+                # print('\tt', abs(tic-toc)) # 2.7684452533721924
+
+        return train_loss
+
+    def load_weights(self, path_checkpoint):
+        """loads the weights from a checkpoint
+
+        Args:
+            path_checkpoint (str): path where checkpoints are saved 
+        """
+        self.checkpoint = path_checkpoint
+        checkpoint = torch.load(path_checkpoint)
+        self.Fitter.load_state_dict(checkpoint['Fitter'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.start_epoch = checkpoint['epoch']
+        check = path_checkpoint.split('/')[-1][:-4]
+
+        try:
+            with self.open_embedding_h() as h:
+                print('Generated available')
+        except Exception as error:
+            print(error)
+            print('Embeddings not opened')
+
+        try:
+            with self.open_generated_h() as h:
+                print('Generated available')
+        except Exception as error:
+            print(error)
+            print('Generated not opened')
+
+    def get_embedding(self, data, batch_size=32,train=True,check=''):
+        """extracts embeddings from the data
+
+        Args:
+            data (torch.tensor): data to get embeddings from
+            batch_size (int, optional): batchsize for inference. Defaults to 32.
+
+        Returns:
+            torch.tensor: predicted embeddings
+        """
+
+        # builds the dataloader
+        dataloader = DataLoader(data, batch_size, shuffle=False)
+        s = data.shape[1]
+        try:
+            try: h = h5py.File(self.emb_h5_path,'w')
+            except: h = h5py.File(self.emb_h5_path,'r+')
+
+            try: check = self.checkpoint.split('/')[-1][:-4]
+            except: check=check
+            
+            # make embedding dataset
+            try:
+                embedding_ = h.create_dataset(f'embedding_{check}', 
+                                            #   data = np.zeros([s[0], s[1], self.num_fits, self.num_params]),
+                                              shape=(s[0], s[1], self.num_fits, self.num_params),
+                                              dtype='float32')  
+            except: 
+                embedding_ = h[f'embedding_{check}']
+                
+            # make fitted dataset
+            try:
+                fits_ = h.create_dataset(f'fits_{check}', 
+                                        #  data = np.zeros([s[0],self.num_fits,s[1],s[2]]),
+                                         shape = (s[0],s[1],self.num_fits,s[2]),
+                                         dtype='float32')  
+            except:
+                fits_ = h[f'fits_{check}']
+
+            self.embedding = embedding_
+            self.fits = fits_
+
+        except Exception as error:
+            print(error) 
+            assert train,"No h5_dataset embedding dataset created"
+            print('Warning: not saving to h5')
+                
+        if train: 
+            print('Created empty h5 embedding datasets to fill during training')
+            return 1 # do not calculate. 
+            # return true to indicate this is filled during training
+
+        else:
+            s=embedding_.shape
+            for i, (_,x) in enumerate(tqdm(dataloader, leave=True, total=len(dataloader))):
+                with torch.no_grad():
+                    value = x
+                    batch_size = x.shape[0]
+                    test_value = Variable(value.to(self.device))
+                    test_value = test_value.float()
+                    embedding,fit = self.Fitter(test_value,return_sum=False)
+                    
+                    self.embedding[i*batch_size:(i+1)*batch_size] = embedding.reshape(batch_size,s[1],s[2],s[3]).cpu().detach().numpy()
+                    self.fits[i*batch_size:(i+1)*batch_size] = fit.reshape(batch_size,s[1],self.num_fits,-1).cpu().detach().numpy()
+                   
+        h.close()
+        
+    def get_clusters(self,dset,scaled_array,n_components=None,n_clusters=None):
+        if n_components == None:
+            print('Getting scree plot...')
+            pca = PCA()
+            pca.fit(scaled_array)
+            plt.clf()
+            plt.plot(pca.explained_variance_ratio_.cumsum(),marker='o')
+            plt.show()
+            n_components = int(input("Choose number of PCA components: "))
+            
+        print(f'PCA with {n_components} components...')
+        pca = PCA(n_components)
+        transformed = pca.fit_transform(scaled_array)
+        
+        if n_clusters == None:
+            print('Getting elbow plot...')
+            wcss = []
+            for i in tqdm(range(10,self.stacked_embedding_size+7)):
+                kmeans_pca = KMeans(n_clusters=i,init='k-means++',random_state=42)
+                kmeans_pca.fit(transformed[::100])
+                wcss.append(kmeans_pca.inertia_)
+            plt.clf()
+            plt.plot(range(10,self.stacked_embedding_size+7),wcss,marker='o')
+            plt.show()
+            n_clusters = int(input('Choose number of clusters: '))
+            
+        print(f'Clustering with {n_clusters} clusters...')
+        kmeans_pca = KMeans(n_clusters=n_clusters,init='k-means++',random_state=42)
+        kmeans_pca.fit(transformed)
+        cluster_list = []
+        for i,particle in enumerate(dset.meta['particle_list']):
+            img = kmeans_pca.labels_[dset.meta['particle_inds'][i]:\
+                dset.meta['particle_inds'][i+1] ].reshape(dset.meta['shape_list'][i][0][0],
+                                                            dset.meta['shape_list'][i][0][1])
+            cluster_list.append(img)
+        self.cluster_list = cluster_list
+        self.cluster_labels = kmeans_pca.labels_
+        print('Done')
+        return cluster_list,kmeans_pca.labels_
+
+    def generate_range(self,dset,checkpoint,
+                         ranges=None,
+                         generator_iters=50,
+                         averaging_number=100,
+                         overwrite=False,
+                         **kwargs
+                         ):
+        """Generates images as the variables traverse the latent space.
+        Saves to embedding h5 dataset
+
+        Args:
+            embedding (tensor, optional): embedding to predict with. Defaults to None.
+            folder_name (str, optional): name of folder where images are saved. Defaults to ''.
+            ranges (list, optional): sets the range to generate images over. Defaults to None.
+            generator_iters (int, optional): number of iterations to use in generation. Defaults to 200.
+            averaging_number (int, optional): number of embeddings to average. Defaults to 100.
+            graph_layout (list, optional): layout parameters of the graph (#graphs,#perrow). Defaults to [2, 2].
+            shape_ (list, optional): initial shape of the image. Defaults to [256, 256, 256, 256].
+        """
+
+        # assert not self.train, 'set self.train to False if calculating manually'
+        # sets the kwarg values
+        for key, value in kwargs.items():
+            exec(f'{key} = value')
+
+        # sets the channels to use in the object
+        if "channels" in kwargs:
+            channels = kwargs["channels"]
+        else:
+            channels = np.arange(self.embedding_size)
+        
+        if "ranges" in kwargs:
+            ranges = kwargs["ranges"]
+
+        # gets the embedding if a specific embedding is not provided
+        try:
+            embedding = self.embedding
+        except Exception as error:
+            print(error)
+            assert False, 'Make sure model is set to appropriate embeddings first'
+
+        try: # try opening h5 file
+            try: # make new file
+                h = h5py.File(self.gen_h5_path,'w')
+            except: # open existing file
+                h = h5py.File(self.gen_h5_path,'r+')
+
+            check = checkpoint.split('/')[-1][:-4]
+            try: # make new dataset
+                if overwrite and check in h: del h[check]
+                self.generated = h.create_dataset(check,
+                                            shape=( len(dset.meta['particle_list']),
+                                                            generator_iters,
+                                                            len(channels), 
+                                                            dset.eels_chs,
+                                                            dset.spec_len),
+                                            dtype='float32') 
+            except: # open existing dataset for checkpoint
+                self.generated = h[check]
+                
+        except Exception as error: # cannot open h5
+            print(error)
+            assert False,"No h5_dataset generated dataset created"
+
+        for p,p_name in enumerate(dset.meta['particle_list']): # each sample
+            print(p, p_name)
+            with self.open_embedding_h() as he:
+                data=self.embedding[dset.meta['particle_inds'][p]:\
+                                    dset.meta['particle_inds'][p+1]].astype('float32')
+                
+            # loops around the number of iterations to generate
+            for i in tqdm(range(generator_iters)):
+                
+                # loops around all of the embeddings
+                for j, channel in enumerate(channels):
+
+                    if ranges is None: # span this range when generating
+                        ranges = np.stack((np.min(data, axis=0),
+                                        np.max(data, axis=0)), axis=1)
+
+                    # linear space values for the embeddings
+                    value = np.linspace(ranges[j][0], ranges[j][1],
+                                        generator_iters)
+
+                    # finds the nearest points to the value and then takes the average
+                    # average number of points based on the averaging number
+                    idx = find_nearest(
+                        data[:,channel],
+                        value[i],
+                        averaging_number)
+
+                    # computes the mean of the selected index to yield 2D image
+                    gen_value = np.mean(data[idx], axis=0)
+
+                    # specifically updates the value of the mean embedding image to visualize 
+                    # based on the linear spaced vector
+                    gen_value[channel] = value[i]
+
+                    generated = self.generate_spectra(gen_value).squeeze()       
+                    # generates diffraction pattern
+                    self.generated[dset.meta['particle_inds'][p]: \
+                                   dset.meta['particle_inds'][p+1],i,j] = generated
+        h.close()
+
+        # return self.generated
+              
+    def generate_spectra(self, embedding):
+        """generates spectra from embeddings
+
+        Args:
+            embedding (torch.tensor): predicted embeddings to decode
+
+        Returns:
+            torch.tensor: decoded spectra
+        """
+
+        embedding = torch.from_numpy(np.atleast_2d(embedding).astype('float32')).to(self.device)
+        predicted_1D = self.decoder(embedding)
+        predicted_1D = predicted_1D.cpu().detach().numpy()
+        
+        return predicted_1D
+    
+    #TODO: make a save checkpoint function
+
 class ConvAutoencoder_Multimodal():
     """builds the convolutional autoencoder
     """# TODO: decorator and setters for self.autoencoder.*stuff*
@@ -1854,9 +2433,687 @@ class ConvAutoencoder_Multimodal():
         predicted_2D = predicted_2D.cpu().detach().numpy()
         return predicted_1D,predicted_2D
 
-       
-       
-       
+class Multiscale1DFitter(nn.Module):
+    def __init__(self, function, x_data, input_channels, num_params, num_fits, limits=[1,975,25,1,25,1], scaler=None, 
+                 post_processing=None, device="cuda", loops_scaler=None, flatten_from=1, 
+                 x1_ch_list=[8,6,4], x1_pool=64, x2_pool_list=[16,8,4], x2_ch_list=[8,16],
+                 dense_list=[24,16,8], **kwargs):
+        """_summary_
+
+
+        Args:
+            function (_type_): _description_
+            x_data (_type_): _description_
+            input_channels (_type_): number of channels in orig data. ex. 2 channels: high loss, low loss
+            num_params (_type_): number of parameters needed to generate the fit
+            num_fits (_type_): the number of peaks to include
+            limits (list):  limits for [A_g, A_l, x, sigma, gamma, nu]
+            scaler (_type_, optional): _description_. Defaults to None.
+            post_processing (_type_, optional): _description_. Defaults to None.
+            device (str, optional): _description_. Defaults to "cuda".
+            loops_scaler (_type_, optional): _description_. Defaults to None.
+            flatten_from (int, optional): _description_. Defaults to 1.
+        """        
+
+        self.input_channels = input_channels
+        self.scaler = scaler
+        self.function = function
+        self.x_data = x_data
+        self.post_processing = post_processing
+        self.device = device
+        self.num_params = num_params
+        self.num_fits = num_fits
+        self.loops_scaler = loops_scaler
+        self.flat_dim = flatten_from
+
+        super().__init__()
+        
+        self.limits = limits
+
+        # Input block of 1d convolution
+        self.hidden_x1 = nn.Sequential(
+            nn.Conv1d(in_channels=self.input_channels,
+                      out_channels=x1_ch_list[0], kernel_size=7),
+            nn.SELU(), nn.Conv1d(in_channels=x1_ch_list[0], #8
+                                 out_channels=x1_ch_list[1], kernel_size=7),
+            nn.SELU(), nn.Conv1d(in_channels=x1_ch_list[1], #6
+                                 out_channels=x1_ch_list[2], kernel_size=5), #4
+            nn.SELU(), nn.AdaptiveAvgPool1d(x1_pool)
+        )
+        x1_outsize = x1_pool*x1_ch_list[-1]
+        # print(x1_outsize)
+        # fully connected block
+        self.hidden_xfc = nn.Sequential(
+            nn.Linear(x1_outsize, x1_outsize//2), nn.SELU(),
+            nn.Linear(x1_outsize//2, x1_outsize//4), nn.SELU(),
+            nn.Linear(x1_outsize//4, x1_outsize//8), nn.SELU(),
+        )
+        xfc_outsize = x1_outsize//8
+        # print(xfc_outsize)
+        # 2nd block of 1d-conv layers
+        self.hidden_x2 = nn.Sequential(
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(in_channels=x1_ch_list[2], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
+            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
+            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
+            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
+            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
+            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5),  nn.SELU(), 
+            nn.AdaptiveAvgPool1d(x2_pool_list[0]),  # Adaptive pooling layer
+            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[1], kernel_size=3), nn.SELU(), 
+            nn.AdaptiveAvgPool1d(x2_pool_list[1]),  # Adaptive pooling layer
+            nn.Conv1d(in_channels=x2_ch_list[1], out_channels=x1_ch_list[-1], kernel_size=3), nn.SELU(), 
+            nn.AdaptiveAvgPool1d(x2_pool_list[2]),  # Adaptive pooling layer
+        )
+        x2_outsize = x2_pool_list[2]*x1_ch_list[-1]
+        # print(x2_outsize)
+        # Flatten layer
+        self.flatten_layer = nn.Flatten() # flatten to batch,-1
+
+        # Final embedding block - Output 4 values - linear
+        self.hidden_embedding = nn.Sequential(
+            nn.Linear(xfc_outsize+x2_outsize, dense_list[0]), nn.SELU(),
+            nn.Linear(dense_list[0], dense_list[1]), nn.SELU(),
+            nn.Linear(dense_list[1], self.num_params*num_fits*input_channels),
+        )
+
+    def forward(self, x, n=-1, return_sum=True):
+        # output shape - samples, spec_channels, frequency
+        # x = torch.swapaxes(x, 1, 2)
+        s=x.shape
+        x = self.hidden_x1(x)
+        # print('x1 shape:', x.shape)
+        xfc = torch.reshape(x, (x.shape[0], -1))  # batch size, channels, features
+        xfc = self.hidden_xfc(xfc)
+        # print('xfc shape:', xfc.shape)
+
+        # batch size, spec_channels, timesteps
+        # x = torch.reshape(x, (x.shape[0], -1))
+        x = self.hidden_x2(x)
+        # print('x2 shape:', x.shape)
+        cnn_flat = self.flatten_layer(x)
+        # print('flat:',cnn_flat.shape)
+
+        encoded = torch.cat((cnn_flat, xfc), -1)  # merge dense and 1d conv.
+        # print('encoded shape:', encoded.shape)
+        embedding = self.hidden_embedding(encoded)
+        embedding = embedding.reshape(x.shape[0]*self.input_channels, self.num_fits, self.num_params)
+        
+        # unscaled_param = embedding
+
+        # if self.scaler is not None:
+        #     # corrects the scaling of the parameters
+        #     unscaled_param = (
+        #         embedding *
+        #         torch.tensor(self.scaler.var_ ** 0.5).cuda()
+        #         + torch.tensor(self.scaler.mean_).cuda()
+        #     )
+        # else:
+            # unscaled_param = embedding
+
+        # passes to the pytorch fitting function
+        fits,params = self.function(
+            embedding, self.x_data, limits=self.limits, device=self.device,return_params=True)
+        # print('fitted shape:', fits.shape)
+        
+        if not return_sum:
+            return params, fits
+        
+        out = fits.sum(axis=1).reshape(s)
+
+        # Does the post processing if required
+        if self.post_processing is not None:
+            out = self.post_processing.compute(out)
+        else:
+            out = out
+
+        if self.loops_scaler is not None:
+            out_scaled = (out - torch.tensor(self.loops_scaler.mean).cuda()) / torch.tensor(
+                self.loops_scaler.std).cuda()
+        else:
+            out_scaled = out
+        
+        return params,out_scaled
+
+        if self.training == True:
+            return out_scaled, unscaled_param
+        if self.training == False:
+            # this is a scaling that includes the corrections for shifts in the data
+            embeddings = (unscaled_param.cuda() - torch.tensor(self.scaler.mean_).cuda()
+                          )/torch.tensor(self.scaler.var_ ** 0.5).cuda()
+            return out_scaled, embeddings, unscaled_param
+
+
+class ComplexPostProcessor:
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def compute(self, fits):
+        # extract and return real and imaginary
+        real = torch.real(fits)
+        real_scaled = (real - torch.tensor(self.dataset.raw_data_scaler.real_scaler.mean).cuda()) / torch.tensor(
+            self.dataset.raw_data_scaler.real_scaler.std
+        ).cuda()
+        imag = torch.imag(fits)
+        imag_scaled = (imag - torch.tensor(self.dataset.raw_data_scaler.imag_scaler.mean).cuda()) / torch.tensor(
+            self.dataset.raw_data_scaler.imag_scaler.std
+        ).cuda()
+        out = torch.stack((real_scaled, imag_scaled), 2)
+
+        return out
+
+
+class Model_SHO(nn.Module):
+
+    def __init__(self,
+                 model,
+                 dataset,
+                 model_basename='',
+                 training=True,
+                 path='Trained Models/SHO Fitter/',
+                 device='cuda',
+                 **kwargs):
+
+        super().__init__()
+        self.model = model
+        self.model.dataset = dataset
+        self.model.training = True
+        self.model_name = model_basename
+        self.path = make_folder(path)
+
+    def fit(self,
+            data_train,
+            batch_size=200,
+            epochs=5,
+            loss_func=torch.nn.MSELoss(),
+            optimizer='Adam',
+            seed=42,
+            datatype=torch.float32,
+            save_all=False,
+            write_CSV=None,
+            closure=None,
+            basepath=None,
+            early_stopping_loss=None,
+            early_stopping_count=None,
+            early_stopping_time=None,
+            save_training_loss=True,
+            i = None,
+            **kwargs):
+
+        loss_ = []
+
+        if basepath is not None:
+            path = f"{self.path}/{basepath}/"
+            make_folder(path)
+            print(f"Saving to {path}")
+        else:
+            path = self.path
+
+        # sets the model to be a specific datatype and on cuda
+        self.to(datatype).to(self.device)
+
+        # Note that the seed will behave differently on different hardware targets (GPUs)
+        random_seed(seed=seed)
+
+        torch.cuda.empty_cache()
+
+        # selects the optimizer
+        if optimizer == 'Adam':
+            optimizer_ = torch.optim.Adam(self.model.parameters())
+        elif optimizer == "AdaHessian":
+            optimizer_ = AdaHessian(self.model.parameters(), lr=.5)
+        elif isinstance(optimizer, dict):
+            if optimizer['name'] == "TRCG":
+                optimizer_ = optimizer['optimizer'](
+                    self.model, optimizer['radius'], optimizer['device'])
+        elif isinstance(optimizer, dict):
+            if optimizer['name'] == "TRCG":
+                optimizer_ = optimizer['optimizer'](
+                    self.model, optimizer['radius'], optimizer['device'])
+        else:
+            try:
+                optimizer = optimizer(self.model.parameters())
+            except:
+                raise ValueError("Optimizer not recognized")
+
+        # instantiate the dataloader
+        train_dataloader = DataLoader(
+            data_train, batch_size=batch_size, shuffle=True)
+
+        # if trust region optimizers stores the TR optimizer as an object and instantiates the ADAM optimizer
+        if isinstance(optimizer_, TRCG):
+            TRCG_OP = optimizer_
+            optimizer_ = torch.optim.Adam(self.model.parameters(), **kwargs)
+
+        total_time = 0
+        low_loss_count = 0
+
+        # says if the model have already stopped early
+        already_stopped = False
+
+        model_updates = 0
+
+        # loops around each epoch
+        for epoch in range(epochs):
+
+            train_loss = 0.0
+            total_num = 0
+            epoch_time = 0
+
+            # sets the model to training mode
+            self.model.train()
+
+            for train_batch in train_dataloader:
+
+                model_updates += 1
+
+                # starts the timer
+                start_time = time.time()
+
+                train_batch = train_batch.to(datatype).to(self.device)
+
+                if "TRCG_OP" in locals() and epoch > optimizer.get("ADAM_epochs", -1):
+
+                    def closure(part, total, device):
+                        pred, embedding = self.model(train_batch)
+                        pred = pred.to(torch.float32)
+                        pred = torch.atleast_3d(pred)
+                        embedding = embedding.to(torch.float32)
+                        loss = loss_func(train_batch, pred)
+                        return loss
+
+                    # if closure is not None:
+                    loss, radius, cnt_compute, cg_iter = TRCG_OP.step(
+                        closure)
+                    train_loss += loss * train_batch.shape[0]
+                    total_num += train_batch.shape[0]
+                    optimizer_name = "Trust Region CG"
+                else:
+                    pred, embedding = self.model(train_batch)
+                    pred = pred.to(torch.float32)
+                    pred = torch.atleast_3d(pred)
+                    embedding = embedding.to(torch.float32)
+                    optimizer_.zero_grad()
+                    loss = loss_func(train_batch, pred)
+                    loss.backward(create_graph=True)
+                    train_loss += loss.item() * pred.shape[0]
+                    total_num += pred.shape[0]
+                    optimizer_.step()
+                    if isinstance(optimizer_, torch.optim.Adam):
+                        optimizer_name = "Adam"
+                    elif isinstance(optimizer_, AdaHessian):
+                        optimizer_name = "AdaHessian"
+
+                epoch_time += (time.time() - start_time)
+
+                total_time += (time.time() - start_time)
+
+                try:
+                    loss_.append(loss.item())
+                except:
+                    loss_.append(loss)
+
+                if early_stopping_loss is not None and already_stopped == False:
+                    if loss < early_stopping_loss:
+                        low_loss_count += train_batch.shape[0]
+                        if low_loss_count >= early_stopping_count:
+                            torch.save(self.model.state_dict(),
+                                       f"{path}/Early_Stoppage_at_{total_time}_{self.model_name}_model_optimizer_{optimizer_name}_epoch_{epoch}_train_loss_{train_loss/total_num}.pth")
+
+                            write_csv(write_CSV,
+                                      path,
+                                      self.model_name,
+                                      i,
+                                      self.model.dataset.noise,
+                                      optimizer_name,
+                                      epoch,
+                                      total_time,
+                                      train_loss/total_num,
+                                      batch_size,
+                                      loss_func,
+                                      seed,
+                                      True,
+                                      model_updates)
+
+                            already_stopped = True
+                    else:
+                        low_loss_count -= (train_batch.shape[0]*5)
+
+            if "verbose" in kwargs:
+                if kwargs["verbose"] == True:
+                    print(f"Loss = {loss.item()}")
+
+            train_loss /= total_num
+
+            print(optimizer_name)
+            print("epoch : {}/{}, recon loss = {:.8f}".format(epoch +
+                                                              1, epochs, train_loss))
+            print("--- %s seconds ---" % (epoch_time))
+
+            # scheduler.step(train_loss)
+            # Print the current learning rate (optional)
+            current_lr = optimizer_.param_groups[0]['lr']
+            print(f"Epoch {epoch+1}, Learning Rate: {current_lr}")
+
+            if save_all:
+                torch.save(self.model.state_dict(),
+                           f"{path}/{self.model_name}_model_optimizer_{optimizer_name}_epoch_{epoch}_train_loss_{train_loss}.pth")
+
+            if early_stopping_time is not None:
+                if total_time > early_stopping_time:
+                    torch.save(self.model.state_dict(),
+                               f"{path}/Early_Stoppage_at_{total_time}_{self.model_name}_model_optimizer_{optimizer_name}_epoch_{epoch}_train_loss_{train_loss}.pth")
+
+                    write_csv(write_CSV,
+                              path,
+                              self.model_name,
+                              i,
+                              self.model.dataset.noise,
+                              optimizer_name,
+                              epoch,
+                              total_time,
+                              train_loss,  # already divided by total_num
+                              batch_size,
+                              loss_func,
+                              seed,
+                              True,
+                              model_updates)
+                    break
+
+        torch.save(self.model.state_dict(),
+                   f"{path}/{self.model_name}_model_optimizer_{optimizer_name}_epoch_{epoch}_train_loss_{train_loss}.pth")
+        write_csv(write_CSV,
+                  path,
+                  self.model_name,
+                  i,
+                  self.model.dataset.noise,
+                  optimizer_name,
+                  epoch,
+                  total_time,
+                  train_loss,  # already divided by total_num
+                  batch_size,
+                  loss_func,
+                  seed,
+                  False,
+                  model_updates)
+
+        if save_training_loss:
+            save_list_to_txt(
+                loss_, f"{path}/Training_loss_{self.model_name}_model_optimizer_{optimizer_name}_epoch_{epoch}_train_loss_{train_loss}.txt")
+
+        self.model.eval()
+
+    def load(self, model_path):
+        self.model.load_state_dict(torch.load(model_path))
+        self.model.to(self.device)
+
+    def inference_timer(self, data, batch_size=.5e4):
+        torch.cuda.empty_cache()
+
+        batch_size = int(batch_size)
+
+        dataloader = DataLoader(data, batch_size)
+
+        # Computes the inference time
+        computeTime(self.model, dataloader, batch_size, device=self.device)
+
+    def predict(self, data, batch_size=10000,
+                single=False,
+                translate_params=True,
+                is_SHO=True):
+
+        self.model.eval()
+
+        dataloader = DataLoader(data, batch_size=batch_size)
+
+        # preallocate the predictions
+        num_elements = len(dataloader.dataset)
+        num_batches = len(dataloader)
+        data = data.clone().detach().requires_grad_(True)
+        predictions = torch.zeros_like(data.clone().detach())
+        params_scaled = torch.zeros((data.shape[0], self.model.num_params))
+        params = torch.zeros((data.shape[0], self.model.num_params))
+
+        # compute the predictions
+        for i, train_batch in enumerate(dataloader):
+            start = i * batch_size
+            end = start + batch_size
+
+            if i == num_batches - 1:
+                end = num_elements
+
+            pred_batch, params_scaled_, params_ = self.model(
+                train_batch.to(self.device))
+
+            if is_SHO:
+                predictions[start:end] = pred_batch.cpu().detach()
+            else:
+                predictions[start:end] = torch.unsqueeze(
+                    pred_batch.cpu().detach(), 2) #12/5/2023
+            params_scaled[start:end] = params_scaled_.cpu().detach()
+            params[start:end] = params_.cpu().detach()
+
+            torch.cuda.empty_cache()
+
+        # converts negative ampltiudes to positive and shifts the phase to compensate
+        if translate_params:
+            params[params[:, 0] < 0, 3] = params[params[:, 0] < 0, 3] - np.pi
+            params[params[:, 0] < 0, 0] = np.abs(params[params[:, 0] < 0, 0])
+
+        if self.model.dataset.NN_phase_shift is not None:
+            params_scaled[:, 3] = torch.Tensor(self.model.dataset.shift_phase(
+                params_scaled[:, 3].detach().numpy(), self.model.dataset.NN_phase_shift))
+            params[:, 3] = torch.Tensor(self.model.dataset.shift_phase(
+                params[:, 3].detach().numpy(), self.model.dataset.NN_phase_shift))
+
+        return predictions, params_scaled, params
+
+    @staticmethod
+    def mse_rankings(true, prediction, curves=False):
+
+        def type_conversion(data):
+
+            data = np.array(data)
+            data = np.rollaxis(data, 0, data.ndim-1)
+
+            return data
+
+        true = type_conversion(true)
+        prediction = type_conversion(prediction)
+
+        errors = Model.MSE(prediction, true)
+
+        index = np.argsort(errors)
+
+        if curves:
+            # true will be in the form [ranked error, channel, timestep]
+            return index, errors[index], true[index], prediction[index]
+
+        return index, errors[index]
+
+    @staticmethod
+    def MSE(true, prediction):
+
+        # calculates the mse
+        mse = np.mean((true.reshape(
+            true.shape[0], -1) - prediction.reshape(true.shape[0], -1))**2, axis=1)
+
+        # converts to a scalar if there is only one value
+        if mse.shape[0] == 1:
+            return mse.item()
+
+        return mse
+
+    @staticmethod
+    def get_rankings(raw_data, pred, n=1, curves=True):
+        """simple function to get the best, median and worst reconstructions
+
+        Args:
+            raw_data (np.array): array of the true values
+            pred (np.array): array of the predictions
+            n (int, optional): number of values for each. Defaults to 1.
+            curves (bool, optional): whether to return the curves or not. Defaults to True.
+
+        Returns:
+            ind: indices of the best, median and worst reconstructions
+            mse: mse of the best, median and worst reconstructions
+        """
+        index, mse, d1, d2 = Model.mse_rankings(
+            raw_data, pred, curves=curves)
+        middle_index = len(index) // 2
+        start_index = middle_index - n // 2
+        end_index = start_index + n
+
+        ind = np.hstack(
+            (index[:n], index[start_index:end_index], index[-n:])).flatten().astype(int)
+        mse = np.hstack(
+            (mse[:n], mse[start_index:end_index], mse[-n:]))
+
+        d1 = np.stack(
+            (d1[:n], d1[start_index:end_index], d1[-n:])).squeeze()
+        d2 = np.stack(
+            (d2[:n], d2[start_index:end_index], d2[-n:])).squeeze()
+
+        # return ind, mse, np.swapaxes(d1[ind], 1, d1.ndim-1), np.swapaxes(d2[ind], 1, d2.ndim-1)
+        return ind, mse, d1, d2
+
+    def print_mse(self, data, labels, is_SHO=True):
+        """prints the MSE of the model
+
+        Args:
+            data (tuple): tuple of datasets to calculate the MSE
+            labels (list): List of strings with the names of the datasets
+        """
+
+        # loops around the dataset and labels and prints the MSE for each
+        for data, label in zip(data, labels):
+
+            if isinstance(data, torch.Tensor):
+                # computes the predictions
+                pred_data, scaled_param, parm = self.predict(data, is_SHO=is_SHO)
+            elif isinstance(data, dict):
+                pred_data, _ = self.model.dataset.get_raw_data_from_LSQF_SHO(
+                    data)
+                data, _ = self.model.dataset.NN_data()
+                pred_data = torch.from_numpy(pred_data)
+
+            # Computes the MSE
+            out = nn.MSELoss()(data, pred_data)
+
+            # prints the MSE
+            print(f"{label} Mean Squared Error: {out:0.4f}")    
+ 
+
+def get_gaussian_parameters_1D(embedding,limits,kernel_size,amp_activation=nn.ReLU()): # add activations
+    """
+    For 1D gaussian
+    Parameters:
+        embedding (Tensor): The embedding tensor with shape (ch, batch, 6).
+        limits (tuple): A tuple containing the limits for [amplitude, mean, and covariance] of 2D gaussian.
+        kernel_size (int): The size of the output image.
+    Returns:
+        tuple: A tuple containing amplitude, theta, mean_x, mean_y, cov_x, cov_y
+    """
+    amplitude = limits[0]*amp_activation(embedding[:,:,0]) # Look at limits before activations
+    m = limits[1]/2
+    n = limits[2]/2
+    mean = torch.clamp(m*nn.Tanh()(embedding[:,:,1]) + m, min=1e-3, max=limits[1])
+    cov = torch.clamp(n*nn.Tanh()(embedding[:,:,2]) + n, min=1e-3, max=limits[2])
+    
+    return amplitude, mean, cov
+    
+def get_lorentzian_parameters_1D(embedding,limits,kernel_size,amp_activation=nn.ReLU()): # add activations
+    """
+    For 1D lorentzian
+    Parameters:
+        embedding (Tensor): The embedding tensor with shape (ch, batch, 6).
+        limits (tuple): A tuple containing the limits for [amplitude, mean, and covariance] of 1D gaussian.
+        kernel_size (int): The size of the output image.
+    Returns:
+        tuple: A tuple containing amplitude, theta, mean_x, mean_y, cov_x, cov_y
+    """
+    m = limits[1]/2
+    amplitude = limits[0]*amp_activation(embedding[:,:,0]) # Look at limits before activations
+    gamma_x = torch.clamp(m*nn.Tanh()(embedding[:,:,0]) + m, min=0, max=limits[1])
+    eta = (0.5*nn.Tanh()(embedding[:,:,2]) + 0.5)
+    return amplitude,gamma_x, eta # look at limits after activations
+
+def generate_pseudovoigt_1D(embedding, dset, limits=[1,975,25,1,25,1], device='cpu',return_params=False):
+    '''embedding is A_g, x, sigma, A_l, gamma, nu. shape should be (batch*eels_ch, num_peaks, spec_len)'''
+    
+    a_g,mean_x,cov_x, = get_gaussian_parameters_1D(embedding, limits, dset.spec_len)
+    a_l,gamma_x, eta = get_lorentzian_parameters_1D(embedding[:,:,-3:],limits[-2:], dset.spec_len)
+    
+    s = mean_x.shape
+    x = torch.arange(dset.spec_len, dtype=torch.float32).repeat(s[0],s[1],1).to(device)
+    
+    # Gaussian component
+    gaussian = a_g.unsqueeze(-1)* torch.exp(
+        -0.5 * ((x-mean_x.unsqueeze(-1)) / cov_x.view(s[0],s[1],1))**2 )
+
+    # Lorentzian component (simplified version)
+    lorentzian = a_l.unsqueeze(-1) *(
+            gamma_x.view(s[0],s[1],1)/ ((x-mean_x.unsqueeze(-1))**2+gamma_x.view(s[0],s[1],1)**2) )
+    
+    # Pseudo-Voigt profile
+    pseudovoigt = eta.unsqueeze(-1) * lorentzian + \
+                    (1 - eta.unsqueeze(-1)) * gaussian
+
+    if return_params: return pseudovoigt.to(torch.float32), torch.stack([a_g,mean_x,cov_x,a_l,gamma_x,eta],axis=2)
+    return pseudovoigt.to(torch.float32)
+
+    # chatgpt pseudovoight
+    # Example parameters for n Pseudo-Voigt functions
+    n = 3  # Number of functions
+    x = torch.linspace(-5, 5, 100)  # Values to evaluate the functions at
+    eta = torch.tensor([0.3, 0.5, 0.7])  # Mixing parameters for each function
+    mu = torch.tensor([0, 1, -1])  # Positions for each function
+    sigma = torch.tensor([1, 0.5, 1.5])  # Widths for each function
+
+    # Reshape tensors for broadcasting
+    x_expanded = x.unsqueeze(1)  # Shape: [100, 1]
+    mu_expanded = mu.unsqueeze(0)  # Shape: [1, n]
+    sigma_expanded = sigma.unsqueeze(0)  # Shape: [1, n]
+    eta_expanded = eta.unsqueeze(0)  # Shape: [1, n]
+
+    # Lorentzian and Gaussian components
+    L = sigma_expanded ** 2 / ((x_expanded - mu_expanded) ** 2 + sigma_expanded ** 2)
+    G = torch.exp(-0.5 * ((x_expanded - mu_expanded) ** 2) / (sigma_expanded ** 2))
+
+    # Pseudo-Voigt function
+    PV = eta_expanded * L + (1 - eta_expanded) * G
+
+    # Sum over n functions
+    sum_PV = PV.sum(dim=1)
+
+    # Now `sum_PV` is the sum of n Pseudo-Voigt functions evaluated at `x`
+    
+    # Amp = params[:, 0].type(torch.complex128)
+    # w_0 = params[:, 1].type(torch.complex128)
+    # Q = params[:, 2].type(torch.complex128)
+    # phi = params[:, 3].type(torch.complex128)
+    # wvec_freq = torch.tensor(wvec_freq)
+
+    # Amp = torch.unsqueeze(Amp, 1)
+    # w_0 = torch.unsqueeze(w_0, 1)
+    # phi = torch.unsqueeze(phi, 1)
+    # Q = torch.unsqueeze(Q, 1)
+
+    # wvec_freq = wvec_freq.to(device)
+
+    # numer = Amp * torch.exp((1.j) * phi) * torch.square(w_0)
+    # den_1 = torch.square(wvec_freq)
+    # den_2 = (1.j) * wvec_freq.to(device) * w_0 / Q
+    # den_3 = torch.square(w_0)
+
+    # den = den_1 - den_2 - den_3
+
+    # func = numer / den
+
+    # return func
+
+      
 class ConvBlock_1D(nn.Module):
     """Convolutional Block with 3 convolutional layers, 1 layer normalization layer with ReLU and ResNet
 

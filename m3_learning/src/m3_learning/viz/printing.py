@@ -18,7 +18,7 @@ class printer:
         self.fileformats = fileformats
         make_folder(self.basepath);
 
-    def savefig(self, fig, name, tight_layout=False, basepath=None, label_figs=None, **kwargs):
+    def savefig(self, fig, name, tight_layout=False, basepath=None, label_figs=None, verbose=False, **kwargs):
         """Function to save a figure
 
         Args:
@@ -42,3 +42,4 @@ class printer:
                 dpi=self.dpi,
                 bbox_inches="tight",
             )
+            if not verbose: plt.clf()

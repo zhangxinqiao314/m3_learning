@@ -12,6 +12,8 @@ import glob
 import os
 import h5py
 from matplotlib.colors import ListedColormap
+from matplotlib import gridspec
+import matplotlib.image as mpimg
 
 ## TODO: get original Viz in here too
 class Viz_Multimodal:
@@ -84,6 +86,7 @@ class Viz_Multimodal:
                              bright_field_=True,
                              dark_field_=True,
                              scalebar_=True,
+                             save_folder='bf_df_spec',
                              **kwargs):
         """visualizes the raw STEM data and the virtual STEM data
 
@@ -96,14 +99,11 @@ class Viz_Multimodal:
             shape_ (list, optional): shape of the original data structure. Defaults to [265, 256, 256, 256].
         """
         # ind = dataset.meta['particle_list'].where(particle)
-        with h5py.File(self.h5_name,'a') as h:
+        with h5py.File(dataset.h5_name,'a') as h:
             diff = h['processed_data/diff'][dataset.meta['particle_inds'][ind]:
                                     dataset.meta['particle_inds'][ind+1]]
             
-            ll = h['processed_data/ll'][dataset.meta['particle_inds'][ind]:
-                                    dataset.meta['particle_inds'][ind+1]]
-            
-            hl = h['processed_data/hl'][dataset.meta['particle_inds'][ind]:
+            eels = h['processed_data/eels'][dataset.meta['particle_inds'][ind]:
                                     dataset.meta['particle_inds'][ind+1]]
             
             # sets the number of figures based on how many plots are shown
@@ -120,22 +120,25 @@ class Viz_Multimodal:
             axs.append( fig.add_subplot(gs[0,0]) ) # particle 0
             axs.append( fig.add_subplot(gs[0,1]) ) # bf 1
             axs.append( fig.add_subplot(gs[0,2]) ) # df 2
-            axs.append( fig.add_subplot(gs[1,:]) ) # ll 3
-            axs.append( fig.add_subplot(gs[2,:]) ) # hl 4
+            axs.append( fig.add_subplot(gs[1,0]) ) # ll 3
+            axs.append( fig.add_subplot(gs[1,1:]) ) # ll 4
+            axs.append( fig.add_subplot(gs[2,0]) ) # hl 5
+            axs.append( fig.add_subplot(gs[2,1:]) ) # hl 6
             
             # # creates the figure
             # fig, axs = layout_fig(fig_num, fig_num, figsize=(
             #                         1.5*fig_num, 1.25))
             a=0
             # plots the raw STEM data
-            imagemap(axs[a], np.mean(data, axis=0), divider_=False)
+            imagemap(axs[a], np.mean(diff, axis=(0,1))*dataset.BF_mask[ind], 
+                     divider_=False)
             a+=1
 
             # plots the virtual bright field image
             if bright_field_ is not None:
-                bright_field = diff[:,dataset.BF_inds[ind][0],
+                bright_field = diff[:,:,dataset.BF_inds[ind][0],
                                       dataset.BF_inds[ind][1]]
-                bright_field = bright_field.mean(axis=1)
+                bright_field = bright_field.mean(axis=(1,2))
                 bright_field = bright_field.reshape(dataset.meta['shape_list'][ind][0][0],
                                                     dataset.meta['shape_list'][ind][0][1])
                 imagemap(axs[a], bright_field, divider_=False)
@@ -144,34 +147,32 @@ class Viz_Multimodal:
             # plots the virtual dark field image
             if dark_field_ is not None:
                 dark_field = diff
-                dark_field[:,dataset.BF_inds[ind][0],
-                            dataset.BF_inds[ind][1]] = 0
-                
-                dark_field = np.mean(dark_field,axis=(1,2))
-                # dark_field.reshape(dataset.meta['shape_list'][ind][0],
-                #                 dataset.meta['shape_list'][ind][1])
+                dark_field[:,:,dataset.BF_inds[ind][0],
+                                dataset.BF_inds[ind][1]] = 0
+                                
+                dark_field = np.mean(dark_field,axis=(2,3))
+                dark_field = dark_field.reshape(dataset.meta['shape_list'][ind][0][0],
+                                                dataset.meta['shape_list'][ind][0][1])
                 imagemap(axs[a], dark_field, divider_=False)
+                a+=1
                 
-            # plots the low loss spectrum
-            if low_loss_ is not None:
-                dark_field = np.mean(dark_field,axis=(1,2))
-                # dark_field.reshape(dataset.meta['shape_list'][ind][0],
-                #                 dataset.meta['shape_list'][ind][1])
-                imagemap(axs[a], dark_field, divider_=False)
+            for i in range(eels.shape[1]):
+                s = dataset.meta['shape_list'][ind][1]
+                data =  eels[:,i]
                 
-            # plots the high loss spectrum
-            if dark_field_ is not None:
-                dark_field = diff
-                dark_field[:,dataset.BF_inds[ind][0],
-                            dataset.BF_inds[ind][1]] = 0
+                # plots image
+                mean_img = np.mean(data,axis=(-1)).reshape(s[0],s[1])
+                imagemap(axs[a], mean_img, divider_=False)
+                a+=1
                 
-                dark_field = np.mean(dark_field,axis=(1,2))
-                # dark_field.reshape(dataset.meta['shape_list'][ind][0],
-                #                 dataset.meta['shape_list'][ind][1])
-                imagemap(axs[a], dark_field, divider_=False)
+                # plots the spectrum
+                mean_spec = np.mean(data,axis=(0))
+                spec_inds = dataset.meta['eels_axis_labels'][i]
+                x = dataset.get_raw_spectral_axis()
+                axs[a].plot(x[spec_inds[2]][spec_inds[0]-1:spec_inds[1]], 
+                            mean_spec - dataset.bkgs[ind][i])
+                a+=1
                 
-            # plots the low loss spectrum
-
             # adds labels to the figure
             if self.labelfigs_:
                 for j, ax in enumerate(axs):
@@ -179,13 +180,12 @@ class Viz_Multimodal:
 
             if scalebar_:
                 # adds a scalebar to the figure
-                add_scalebar(axs[-1], self.scalebar_)
+                add_scalebar(axs[2], self.scalebar_)
 
-            make_folder(f'{self.printer.basepath}bf_df/')
+            make_folder(f'{self.printer.basepath}{save_folder}/')
             # saves the figure
             if self.printer is not None:
-                self.printer.savefig(fig, f'bf_df/{dataset.meta["particle_list"][ind]}', tight_layout=False)
-
+                self.printer.savefig(fig, f'{save_folder}/{dataset.meta["particle_list"][ind]}', tight_layout=True)
 
     def find_nearest(self, array, value, averaging_number):
         """Finds the nearest value in an array
@@ -530,9 +530,7 @@ class Viz_Multimodal:
                     plt.close(fig);
         # he.close()
         # hg.close()
-            
-  
-                 
+              
     def generator_images_2D(self,dset,
                          folder_name='',
                          ranges=None,
@@ -637,5 +635,168 @@ class Viz_Multimodal:
                     plt.close(fig);
         # he.close()
         # hg.close()
+        
+    def fits_Fitter1D(self,model,dset,savefolder='embeddings',overwrite=True,
+                   name="",
+                   channels = None,
+                   labelfigs_ = False,
+                   scalebar_ = None,
+                   printer = None,):
+        # TODO: put parameter labels (a_g, a_l, x, sig, gam, nu)
+        # TODO: display orig spectrum
+        meta = {}
+        with h5py.File(dset.h5_name, 'r+') as h5:
+            for key, value in h5[f'{dset.mode[0]}'].attrs.items():
+                meta[key] = value
+        chnm = ['HL: ','LL: ']    
+        nchs = dset.eels_chs
+        nfits = model.num_fits
+        x_vals = [dset.raw_x_labels[i0-1:i1+1,l] for i0,i1,l in dset.meta['eels_axis_labels']]
+        for p,p_name in enumerate(tqdm(dset.meta['particle_list'])): # each sample
+            x,y,_ = meta['shape_list'][p]
+            if not overwrite: 
+                existing = [item.split('/')[-1] for item in glob.glob(f'{self.printer.basepath}{savefolder}*')]
+                if '*'+p_name+'_embedding_maps.png' in existing:
+                    print('skipping',savefolder+'*'+p_name+'_embedding_maps.png')
+                    continue
+
+            with model.open_embedding_h() as h:
+                check = model.checkpoint.split('/')[-1][:-4]
+                emb = h[f'embedding_{check}'][ meta['particle_inds'][p]:meta['particle_inds'][p+1]]
+                fits = h[f'fits_{check}'][ meta['particle_inds'][p]:meta['particle_inds'][p+1]]
+                
+            make_folder(self.printer.basepath+savefolder)
             
-  
+            # sets the channels to use in the object (emb channels, not orig channels)
+            if channels is None:
+                channels = range(nfits)
+
+            # builds the figure
+            fig = plt.figure(figsize=(6*nchs,len(channels)*2))
+            r,c = nfits,3*nchs
+            gs = gridspec.GridSpec(r,c) 
+            axs=[]
+            
+            for i,c in enumerate(channels):
+                for j in range(nchs):
+                    axs.append(plt.subplot(gs[i,j*3]))
+                    imagemap(axs[-1],fits[:,j,c].mean(axis=1).reshape((x,y)))
+                    
+                    axs.append(plt.subplot(gs[i,j*3+1:j*3+3]))
+                    axs[-1].plot(x_vals[j], fits[:,j,c].mean(axis=0))
+                    title_text = (r'$A_g$:{:.1e},  $A_l$:{:.1e},  x:{:.1e},  $\sigma$:{:.1e},  $\gamma$:{:.1e},  $\nu$:{:.1e}'.format(
+                        emb[:, j, c, 0].mean(0),
+                        emb[:, j, c, 1].mean(0),
+                        emb[:, j, c, 2].mean(0),
+                        emb[:, j, c, 3].mean(0),
+                        emb[:, j, c, 4].mean(0),
+                        emb[:, j, c, 5].mean(0)
+                    ))
+                    axs[-1].set_title(chnm[j]+title_text,fontsize=10,loc='right')
+            
+            fig.suptitle(p_name)    
+            
+            # adds labels to the figure
+            if labelfigs_:
+                for i, ax in enumerate(axs):
+                    labelfigs(ax, i)
+
+            # adds the scalebar
+            if scalebar_ is not None:
+                add_scalebar(axs[-2], scalebar_)
+
+            # prints the image
+            if printer is not None:
+                printer.savefig(fig,
+                    f'{savefolder}/{p_name}_embedding_maps', tight_layout=True)
+            
+            # plt.close(fig)
+            # plt.clf();
+            # plt.close();        
+            
+    def fits_Fitter1D_widget(self,p,i,model,dset,meta,nchs,x_vals,chnm,
+                      savefolder='embeddings',
+                      overwrite=True,
+                   channels = None,
+                   scalebar_ = None,
+                   printer = None):
+        """create images for viewing with ipywidget
+
+        Args:
+            model (_type_): _description_
+            dset (_type_): _description_
+            p (_type_): particle num
+            i (_type_): embedding channel num
+            j (_type_): eels channel num
+            savefolder (str, optional): _description_. Defaults to 'embeddings'.
+            overwrite (bool, optional): _description_. Defaults to True.
+            name (str, optional): _description_. Defaults to "".
+            channels (_type_, optional): _description_. Defaults to None.
+            labelfigs_ (bool, optional): _description_. Defaults to False.
+            scalebar_ (_type_, optional): _description_. Defaults to None.
+            printer (_type_, optional): _description_. Defaults to None.
+        """        
+        # TODO: put parameter labels (a_g, a_l, x, sig, gam, nu)
+        # TODO: display orig spectrum
+
+        # existing = [item.split('/')[-1] for item in glob.glob(f'{self.printer.basepath}{savefolder}*')]
+        # if f'{p}_{i}_embedding_maps.png' in existing:
+        #     img = mpimg.imread('your_image.png')
+        #     plt.imshow(img)
+        #     plt.show()
+        #     return 
+            
+        with model.open_embedding_h() as h:
+            check = model.checkpoint.split('/')[-1][:-4]
+            emb = h[f'embedding_{check}'][ meta['particle_inds'][p]:meta['particle_inds'][p+1]]
+            fits = h[f'fits_{check}'][ meta['particle_inds'][p]:meta['particle_inds'][p+1]]
+        
+        x,y,_ = meta['shape_list'][p]    
+        make_folder(self.printer.basepath+savefolder)
+
+        # builds the figure
+        fig = plt.figure(figsize=(6,2*nchs))
+        rows,cols = nchs,3
+        gs = gridspec.GridSpec(rows,cols) 
+        axs=[]
+
+        for j in range(nchs):
+            axs.append(plt.subplot(gs[j,0]))
+            imagemap(axs[-1],fits[:,j,i].mean(axis=1).reshape((x,y)))
+            
+            axs.append(plt.subplot(gs[j,1:]))
+            axs[-1].plot(x_vals[j], fits[:,j,i].mean(axis=0))
+            title_text = (r'$A_g$:{:.1e},  $A_l$:{:.1e},  x:{:.1e},  $\sigma$:{:.1e},  $\gamma$:{:.1e},  $\nu$:{:.1e}'.format(
+                emb[:, j, channels[i], 0].mean(0),
+                emb[:, j, channels[i], 1].mean(0),
+                emb[:, j, channels[i], 2].mean(0),
+                emb[:, j, channels[i], 3].mean(0),
+                emb[:, j, channels[i], 4].mean(0),
+                emb[:, j, channels[i], 5].mean(0)
+            ))
+            axs[-1].set_title(chnm[j]+title_text,fontsize=7,loc='right')
+    
+        fig.suptitle(f"{dset.meta['particle_list'][p]}, emb channel {i}")
+
+        # adds the scalebar
+        if scalebar_ is not None:
+            add_scalebar(axs[-2], scalebar_)
+
+        # prints the image
+        if printer is not None:
+            printer.savefig(fig,
+                f'{savefolder}/{p}_{i}_embedding_maps.png', tight_layout=True)
+        
+        # plt.close(fig)
+        # plt.clf();
+        # plt.close();
+            
+    def fits_histograms(self,model,dset):
+        pass
+        
+        
+def imshow_tensor(x):
+    import matplotlib.pyplot as plt
+    plt.imshow(x.detach().cpu().numpy());
+    plt.colorbar()
+    plt.show()
