@@ -1,19 +1,14 @@
-from util.file_IO import make_folder
-from viz.layout import layout_fig
+from ...util.file_IO import make_folder
+from ...viz.layout import layout_fig
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from viz.layout import layout_fig, imagemap, labelfigs, find_nearest, add_scalebar
+from ...viz.layout import layout_fig, imagemap, labelfigs, find_nearest, add_scalebar
 from os.path import join as pjoin
-<<<<<<< HEAD
 from m3_learning.viz.nn import embeddings as embeddings_
 import h5py
 import glob
-=======
-from viz.nn import embeddings as embeddings_
-
->>>>>>> bb5168e (adapt import for local)
 class Viz:
 
     """Visualization class for the STEM_AE class
@@ -84,12 +79,8 @@ class Viz:
                              bright_field_=None,
                              dark_field_=None,
                              scalebar_=True,
-<<<<<<< HEAD
                              filename=None,
                              shape_=[256, 256, 256, 256],
-=======
-                             using_panel=False,
->>>>>>> 3c9474c (small viz update)
                              **kwargs):
         """visualizes the raw STEM data and the virtual STEM data
 
@@ -143,24 +134,21 @@ class Viz:
         if scalebar_:
             # adds a scalebar to the figure
             add_scalebar(axs[-1], self.scalebar_)
-<<<<<<< HEAD
 
         # saves the figure
         if self.printer is not None:
             self.printer.savefig(fig, filename, tight_layout=False)
-=======
             
-        if not using_panel:
-            make_folder(f'{self.printer.basepath}bf_df/')
-            # saves the figure
-            if self.printer is not None:
-                self.printer.savefig(fig, f'bf_df/{dataset.meta["particle_list"][ind]}', tight_layout=False)
-        else: plt.show()
+        # if not using_panel:
+        #     make_folder(f'{self.printer.basepath}bf_df/')
+        #     # saves the figure
+        #     if self.printer is not None:
+        #         self.printer.savefig(fig, f'bf_df/{dataset.meta["particle_list"][ind]}', tight_layout=False)
+        # else: plt.show()
                 
         plt.close('all')
         plt.clf()
 
->>>>>>> 3c9474c (small viz update)
 
     def find_nearest(self, array, value, averaging_number):
         """Finds the nearest value in an array
