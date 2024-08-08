@@ -1,10 +1,12 @@
 import h5py
 import py4DSTEM
-import tqdm
+from tqdm import tqdm
 import xml.etree.ElementTree as ET
 import dask.array as da
 import re
 import time
+from dask.diagnostics import ProgressBar
+import numpy as np
 
 import torch
 
@@ -31,7 +33,7 @@ class Stacked_4DSTEM():
         self.file_names = file_names
         self.diff_list = diff_list
         self.meta_list = meta_list
-        
+        self.orig_shape = list(py4DSTEM.import_file(self.diff_list[0]).data.shape)
         self.max = 0
         self.min = 0
         
@@ -67,96 +69,95 @@ class Stacked_4DSTEM():
             if isinstance(value, dict):
                 try: sub_group = group.create_group(key)
                 except: sub_group = group[key]
+                print('start dict',group,key)
                 Stacked_4DSTEM.add_dict_to_h5(sub_group, value)
+                print('done dict',group,key)
             elif isinstance(value, list):
+                value = {str(i): v for i,v in enumerate(value)}
                 try: group.create_dataset(key, data=value)
                 except: group[key]=value
+                finally:
+                    try: sub_group = group.create_group(key)
+                    except: sub_group = group[key]
+                    print('start list',group,key)
+                    Stacked_4DSTEM.add_dict_to_h5(sub_group, value)
+                    print('done list',group,key)
             else:
-                group.attrs[key] = value
+                try: group.attrs[key] = group.attrs[key].append(value)
+                except: group.attrs[key] = value
     
+    # TODO: parallelize scaling methods
     @staticmethod    
-    def log(h5_file, in_name, out_name):
-        assert in_name in h5_file.keys() and out_name in h5_file.keys()
-        with h5py.File(h5_file, 'r+') as f:
-            data = f[in_name]
-            dask_data = da.from_array(data,chunks=(1, 128, 128, 128, 128))
-            log_scaled_data = da.log1p(dask_data) 
-            log_scaled_data = log_scaled_data.rechunk((1, 1, 128, 128))
-            log_scaled_data = log_scaled_data.reshape((-1, 1, 128, 128))
-            f[out_name] = log_scaled_data
-    
+    def log(h5_filepath, in_name, out_name, **kwargs):
+        with h5py.File(h5_filepath, 'r+') as f:
+            s = f[in_name].shape
+            s_ = f['raw_data'].shape
+            assert in_name in f.keys() and out_name in f.keys()
+            if len(s)==5:
+                for i in tqdm(range(s[0])):
+                    f[out_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]] = np.log1p(f[in_name][i]).reshape(-1,1,s_[3],s_[4])
+            else: 
+                for i in tqdm(range(int(s[0]/s_[0]/s_[1]))):
+                    f[out_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]] = np.logp1(f[in_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]].reshape(-1,1,s_[3],s_[4]))
+
     @staticmethod    
-    def standard_scale(h5_file, in_name, out_name):
-        with h5py.File(h5_file, 'r') as f:
-            raw_data = f[in_name]
-            raw_data_dask = da.from_array(raw_data, chunks=(1, 128, 128, 128, 128))
-            
+    def standard_scale(h5_filepath, in_name, out_name):
+        with h5py.File(h5_filepath, 'r+') as f:
+            s = f[in_name].shape
+            assert in_name in f.keys() and out_name in f.keys()
             def standard_scaling(scan):
                 mean = scan.mean()
                 std = scan.std()
                 return (scan - mean) / std
+            s_ = f['raw_data'].shape
+            assert in_name in f.keys() and out_name in f.keys()
+            if len(s)==5:
+                for i in tqdm(range(s[0])):
+                    f[out_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]] = standard_scaling(f[in_name][i]).reshape(-1,1,s_[3],s_[4])
+            else: 
+                for i in tqdm(range(int(s[0]/s_[2]/s_[1]))):
+                    f[out_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]] = standard_scaling(f[in_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]].reshape(-1,1,s_[3],s_[4]))
             
-            standardized_data = raw_data_dask.map_blocks(standard_scaling)
-            standardized_data = standardized_data.rechunk((1, 1, 128, 128))
-            standardized_data = standardized_data.reshape((-1, 1, 128, 128))
-            f[out_name] = standardized_data
             
     @staticmethod     
-    def min_max_scale(h5_file, in_name, out_name):
-        with h5py.File(h5_file, 'r') as f:
-            raw_data = f[in_name]
-            raw_data_dask = da.from_array(raw_data, chunks=(1, 128, 128, 128, 128))
+    def min_max_scale(h5_filepath, in_name, out_name):
+        with h5py.File(h5_filepath, 'r+') as f:
+            s = f[in_name].shape
+            assert in_name in f.keys() and out_name in f.keys()
             def min_max_scaling(scan):
                 min_val = scan.min()
                 max_val = scan.max()
                 return (scan - min_val) / (max_val - min_val)
-            min_max_scaled_data = raw_data_dask.map_blocks(min_max_scaling)
-            min_max_scaled_data = min_max_scaled_data.rechunk((1, 1, 128, 128))
-            min_max_scaled_data = min_max_scaled_data.reshape((-1, 1, 128, 128))
-            f[out_name] = min_max_scaled_data
-    
-                           
-    def write_metadata(self,overwrite=False):
+            s_ = f['raw_data'].shape
+            assert in_name in f.keys() and out_name in f.keys()
+            if len(s)==5:
+                for i in tqdm(range(s[0])):
+                    f[out_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]] = min_max_scaling(f[in_name][i]).reshape(-1,1,s_[3],s_[4])
+            else: 
+                for i in tqdm(range(int(s[0]/s_[2]/s_[1]))):
+                    f[out_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]] = min_max_scaling(f[in_name][i*s_[2]*s_[1]:(i+1)*s_[2]*s_[1]].reshape(-1,1,s_[3],s_[4]))
+                                  
+    def write_metadata(self,overwrite=False): #TODO: wtf doesn work
         metadata_dict = {}
-        for i,temp_label in enumerate(tqdm(self.file_names)):
+        for i,temp_label in enumerate(self.file_names):
             metadata = Stacked_4DSTEM.parse_xml_file(self.meta_list[i])
             metadata_dict[temp_label] = metadata
-        with h5py.File(self.h5_filepath, 'a') as h:
-            if overwrite: 
-                if 'metadata' in h.keys(): del h['overwrite']
-            Stacked_4DSTEM.add_dict_to_h5(metadata_dict)
+        # with h5py.File(self.h5_filepath, 'a') as h:
+        #     if overwrite: 
+        #         if 'metadata' in h.keys(): del h['metadata']
+        #         h.create_group('metadata')
+        #     Stacked_4DSTEM.add_dict_to_h5(h['metadata'],metadata_dict)
+        self.metadata = metadata_dict
         
     def write_raw_data(self,overwrite=False):
         with h5py.File(self.h5_filepath, 'a') as h:
-            if overwrite: 
+            if overwrite:
                 if 'raw_data' in h.keys(): del h['raw_data']
-            try: 
                 raw_data = h.create_dataset('raw_data', shape=([len(self.diff_list)]+self.orig_shape))
-                for i in tqdm(range(len(self.temps_list))):
-                    datacube = py4DSTEM.import_file(self.diff_list[i])
-                    meta_dict = Stacked_4DSTEM.parse_xml_file(self.meta_list[i])
+                for i,diff in enumerate(tqdm(self.diff_list)):
+                    datacube = py4DSTEM.import_file(diff)
                     raw_data[i] = datacube.data
-            except: 
-                print('Raw data already written. Set overwrite=True')
-                
-    def write_processed_data(self,overwrite=False,
-                             dset_name='processed_data',
-                             process_list = [Stacked_4DSTEM.log,
-                                             Stacked_4DSTEM.standard_scale,
-                                             Stacked_4DSTEM.min_max_scale]
-                             ):
-        with h5py.File(self.h5_filepath, 'a') as h:
-            if overwrite: 
-                if dset_name in h.keys(): del h[dset_name]
-            try: 
-                processed_data = h.create_dataset(dset_name, shape=([len(self.diff_list)]+self.orig_shape))
-                for process in process_list: #TODO: add timing info?
-                    print(process, end='')
-                    tic = time.time()
-                    process(self.h5_filepath,'raw_data',dset_name)
-                    print(f': {tic-time.time()} s')
-            except: 
-                print('Raw data already written. Set overwrite=True')
+            else: print('Raw data already written. Set overwrite=True')
     
     def __len__(self):
         with h5py.File(self.h5_filepath, 'a') as h: return h['processed_data'].shape[0]
@@ -185,7 +186,7 @@ class Spot_Dataset(Stacked_4DSTEM):
         self.temps_list = [extract_number(name) for name in file_names]
         self.tile_coords = tile_coords
         self.tile_slices = [(slice(coord[0]-self.r, coord[0]+self.r), 
-                             slice(coord[1]-self.r, coord[1]+self.r)) for coord in self.tile_coords])
+                             slice(coord[1]-self.r, coord[1]+self.r)) for coord in self.tile_coords]
         self.orig_shape = orig_shape
         self.interp_size = interp_size
         self.masking = True
