@@ -67,43 +67,7 @@ def generate_pseudovoigt_1D(embedding, dset, limits=[1,975,25,1,25,1], device='c
     return pseudovoigt.to(torch.float32)
 
 
-# def get_gaussian_parameters_2D(embedding,limits,kernel_size,amp_activation=nn.ReLU()): # add activations
-#     """
-#     For 1D gaussian
-#     Parameters:
-#         embedding (Tensor): The embedding tensor with shape (ch, batch, 6).
-#         limits (tuple): A tuple containing the limits for [amplitude, mean, and covariance] of 2D gaussian.
-#         kernel_size (int): The size of the output image.
-#     Returns:
-#         tuple: A tuple containing amplitude, theta, mean_x, mean_y, cov_x, cov_y
-#     """
-#     amplitude = limits[0]*amp_activation(embedding[:,:,0]) # Look at limits before activations
-#     m = limits[1]/2
-#     n = limits[2]/2
-#     x = torch.clamp(m*nn.Tanh()(embedding[:,:,1]) + m, min=1e-3, max=limits[1])
-#     y = torch.clamp(m*nn.Tanh()(embedding[:,:,1]) + m, min=1e-3, max=limits[1])
-#     sx = torch.clamp(n*nn.Tanh()(embedding[:,:,2]) + n, min=1e-3, max=limits[2])
-#     sy = torch.clamp(n*nn.Tanh()(embedding[:,:,2]) + n, min=1e-3, max=limits[2])
-    
-#     return amplitude, mean, cov
-    
-# def get_lorentzian_parameters_2D(embedding,limits,kernel_size,amp_activation=nn.ReLU()): # add activations
-#     """
-#     For 1D lorentzian
-#     Parameters:
-#         embedding (Tensor): The embedding tensor with shape (ch, batch, 6).
-#         limits (tuple): A tuple containing the limits for [amplitude, mean, and covariance] of 1D gaussian.
-#         kernel_size (int): The size of the output image.
-#     Returns:
-#         tuple: A tuple containing amplitude, mean_x, mean_y, gamma_x, gamma_y
-#     """
-#     m = limits[1]/2
-#     amplitude = limits[0]*amp_activation(embedding[:,:,0]) # Look at limits before activations
-#     gamma_x = torch.clamp(m*nn.Tanh()(embedding[:,:,0]) + m, min=0, max=limits[1])
-#     eta = (0.5*nn.Tanh()(embedding[:,:,2]) + 0.5)
-#     return amplitude,gamma_x, eta # look at limits after activations
-
-def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 1, 10, 10, 10, 10, ], device='cpu', return_params=False):
+def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 1, 10, 10, 10, 10, 0.5], device='cpu', return_params=False):
     '''embedding is: 
         A: Area under curve
         I_b: baseline intensity
