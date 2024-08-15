@@ -1118,42 +1118,6 @@ class ConvAutoencoder_1D():
 
 
 class FitterAutoencoder_1D():
-    
-    # def __init__(self,
-    #              encoder_step_size,
-    #              pooling_list,
-    #              decoder_step_size,
-    #              upsampling_list,
-    #              embedding_size,
-    #              channels,
-    #              conv_size,
-    #              device,
-    #              checkpoint = None,
-    #              learning_rate=3e-5,
-    #              emb_h5_path = './Combined_all_samples_1D/embeddings_1D.h5',
-    #              gen_h5_path = './Combined_all_samples_1D/generated_1D.h5',
-    #              ):
-    #     """Initialization function
-
-    #     Args:
-    #         encoder_step_size (list): sets the size of the encoder
-    #         pooling_list (list): sets the pooling list to define the pooling layers
-    #         decoder_step_size (list): sets the size of the decoder
-    #         upsampling_list (list): sets the size for upsampling
-    #         embedding_size (int): number of embedding channels
-    #         conv_size (int): sets the number of convolutional neurons in the model
-    #         device (torch.device): set the device to run the model
-    #         learning_rate (float, optional): sets the learning rate for the optimizer. Defaults to 3e-5.
-    #     """
-    #     self.encoder_step_size = encoder_step_size
-    #     self.pooling_list = pooling_list
-    #     self.decoder_step_size = decoder_step_size
-    #     self.upsampling_list = upsampling_list
-    #     self.embedding_size = embedding_size
-    #     self.conv_size = conv_size
-    #     self.device = device
-    #     self.learning_rate = learning_rate
-    #     self.channels = channels
         
     def __init__(self,function, dset, input_channels, num_params, num_fits, limits=[1,975,25,1,25,1], scaler=None, 
                  post_processing=None, device="cuda", 
@@ -1251,7 +1215,7 @@ class FitterAutoencoder_1D():
               seed=12,
               epochs=100,
               with_scheduler=True,
-              ln_parm=1,
+              ln_parm=2,
               epoch_=None,
               folder_path='./',
               batch_size=32,
@@ -1331,7 +1295,12 @@ class FitterAutoencoder_1D():
                 self.checkpoint = folder_path + f'/{save_date}_' +\
                     f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
                     f'_trainloss:{train_loss:.4f}.pkl'
-                self.save_checkpoint(epoch)
+                self.save_checkpoint(epoch,
+                                     train_loss=train_loss,
+                                     coef_1=coef_1, 
+                                     coef_2=coef_2,
+                                     coef_3=coef_3,
+                                     ln_parm=ln_parm)
 
             if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
                 h = self.embedding.file
@@ -1352,11 +1321,12 @@ class FitterAutoencoder_1D():
         if scheduler is not None:
             scheduler.step()
 
-    def save_checkpoint(self,epoch):
+    def save_checkpoint(self,epoch,**kwargs):
         checkpoint = {
             "Fitter": self.Fitter.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             "epoch": epoch,
+            'loss_dict': kwargs
         }
         torch.save(checkpoint, self.checkpoint)
 
@@ -3035,14 +3005,14 @@ def get_lorentzian_parameters_1D(embedding,limits,kernel_size,amp_activation=nn.
     """
     m = limits[1]/2
     amplitude = limits[0]*amp_activation(embedding[:,:,0]) # Look at limits before activations
-    gamma_x = torch.clamp(m*nn.Tanh()(embedding[:,:,0]) + m, min=0, max=limits[1])
+    gamma_x = torch.clamp(m*nn.Tanh()(embedding[:,:,1]) + m, min=0, max=limits[1])
     eta = (0.5*nn.Tanh()(embedding[:,:,2]) + 0.5)
     return amplitude,gamma_x, eta # look at limits after activations
 
 def generate_pseudovoigt_1D(embedding, dset, limits=[1,975,25,1,25,1], device='cpu',return_params=False):
     '''embedding is A_g, x, sigma, A_l, gamma, nu. shape should be (batch*eels_ch, num_peaks, spec_len)'''
     
-    a_g,mean_x,cov_x, = get_gaussian_parameters_1D(embedding, limits, dset.spec_len)
+    a_g,mean_x,cov_x = get_gaussian_parameters_1D(embedding[:,:,:3], limits, dset.spec_len)
     a_l,gamma_x, eta = get_lorentzian_parameters_1D(embedding[:,:,-3:],limits[-2:], dset.spec_len)
     
     s = mean_x.shape

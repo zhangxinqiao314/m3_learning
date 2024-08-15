@@ -14,7 +14,10 @@ import h5py
 from matplotlib.colors import ListedColormap
 from matplotlib import gridspec
 import matplotlib.image as mpimg
+import panel as pn
 
+
+# TODO: make interactive clickable visualization using datashader, holoview, and Panel
 ## TODO: get original Viz in here too
 class Viz_Multimodal:
 
@@ -714,12 +717,12 @@ class Viz_Multimodal:
             # plt.clf();
             # plt.close();        
             
-    def fits_Fitter1D_widget(self,p,i,model,dset,meta,nchs,x_vals,chnm,
-                      savefolder='embeddings',
-                      overwrite=True,
-                   channels = None,
-                   scalebar_ = None,
-                   printer = None):
+    def fits_Fitter1D_widget(self,p,e,a,b,w,model,dset,
+                            savefolder='embeddings',
+                            overwrite=True,
+                            scalebar_ = None,
+                            printer = None,
+                            mean=False):
         """create images for viewing with ipywidget
 
         Args:
@@ -745,55 +748,147 @@ class Viz_Multimodal:
         #     plt.imshow(img)
         #     plt.show()
         #     return 
-            
+        meta=dset.meta
+        idx = dset.get_index(p,a,b)
+        nchs=dset.eels_chs
         with model.open_embedding_h() as h:
             check = model.checkpoint.split('/')[-1][:-4]
-            emb = h[f'embedding_{check}'][ meta['particle_inds'][p]:meta['particle_inds'][p+1]]
+            embs = h[f'embedding_{check}'][ meta['particle_inds'][p]:meta['particle_inds'][p+1]]
+            emb = h[f'embedding_{check}'][idx]
             fits = h[f'fits_{check}'][ meta['particle_inds'][p]:meta['particle_inds'][p+1]]
+            fit = h[f'fits_{check}'][idx]
+        _,orig = dset[idx]
         
-        x,y,_ = meta['shape_list'][p]    
+        x,y = meta['shape_list'][p]
         make_folder(self.printer.basepath+savefolder)
 
         # builds the figure
-        fig = plt.figure(figsize=(6,2*nchs))
-        rows,cols = nchs,3
+        fig = plt.figure(figsize=(model.num_params, 3*nchs))
+        fig.suptitle(f"{dset.meta['particle_list'][p]}, emb channel {e}")
+        
+        rows,cols = model.num_params,3*nchs
         gs = gridspec.GridSpec(rows,cols) 
         axs=[]
 
         for j in range(nchs):
-            axs.append(plt.subplot(gs[j,0]))
-            imagemap(axs[-1],fits[:,j,i].mean(axis=1).reshape((x,y)))
+            plt.rc('text', usetex=True)
             
-            axs.append(plt.subplot(gs[j,1:]))
-            axs[-1].plot(x_vals[j], fits[:,j,i].mean(axis=0))
-            title_text = (r'$A_g$:{:.1e},  $A_l$:{:.1e},  x:{:.1e},  $\sigma$:{:.1e},  $\gamma$:{:.1e},  $\nu$:{:.1e}'.format(
-                emb[:, j, channels[i], 0].mean(0),
-                emb[:, j, channels[i], 1].mean(0),
-                emb[:, j, channels[i], 2].mean(0),
-                emb[:, j, channels[i], 3].mean(0),
-                emb[:, j, channels[i], 4].mean(0),
-                emb[:, j, channels[i], 5].mean(0)
-            ))
-            axs[-1].set_title(chnm[j]+title_text,fontsize=7,loc='right')
+            # parameters
+            par_labels = ['$A_g$', '$A_l$', 'x', '$\\sigma$', '$\\gamma$', '$\\nu$']
+            for par in range(rows):
+                axs.append(plt.subplot(gs[j*3,par]))
+                imagemap(axs[-1],embs[:,j,e,par].reshape((x,y)),colorbars=False)
+                axs[-1].scatter(a,b,s=5,c='r',marker='o')
+                axs[-1].text(0.95, 0.95, f'{par_labels[par]}: {emb[j, e, par]:.1e}',
+                            verticalalignment='top', horizontalalignment='right',
+                            transform=axs[-1].transAxes,
+                            color='white', fontsize=8)
+                # axs[-1].set_title(f'{par_labels[par]}: {emb[j,e,par]:.1e}',fontsize=6)
     
-        fig.suptitle(f"{dset.meta['particle_list'][p]}, emb channel {i}")
-
+            # real space img
+            axs.append(plt.subplot(gs[j*3+1:j*3+3,:2])) 
+            
+            if mean: imagemap(axs[-1], fits[:,j,e].mean(axis=1).reshape((x,y)))
+            else: imagemap(axs[-1], fits[:,j,e,w].reshape((x,y)))
+            
+            axs[-1].scatter(a,b,s=5,c='r',marker='o')
+            axs[-1].text(0.95, 0.95, f'({a},{b})',
+                            verticalalignment='top', horizontalalignment='right',
+                            transform=axs[-1].transAxes,
+                            color='white', fontsize=8)
+            # axs[-1].set_title(f'({a},{b})',fontsize=8)
+            
+            # spectrum
+            axs.append(plt.subplot(gs[j*3+1:j*3+3,2:]))
+            axs[-1].tick_params(axis='both', which='both', direction='in')
+            axs[-1].tick_params(axis='x', which='both', direction='in', pad=-10)  # Bottom axis labels
+            axs[-1].tick_params(axis='y', which='both', direction='in', pad=-20)   # Left axis labels
+            
+            # axs[-1].plot(dset.meta['eels_axis_labels'][j], orig[j])
+            if mean: axs[-1].plot(dset.meta['eels_axis_labels'][j], fits[:,j,e].mean(axis=0))
+            else:  axs[-1].plot(dset.meta['eels_axis_labels'][j], fit[j,e])
+            
+            axs[-1].axvline(meta['eels_axis_labels'][j][w],color='r')
+            axs[-1].text(0.95, 0.95, f'{meta["eels_axis_labels"][j][w]} eV',
+                        verticalalignment='top', horizontalalignment='right',
+                        transform=axs[-1].transAxes,
+                        color='black', fontsize=8)
+            # axs[-1].set_title(f'{meta["eels_axis_labels"][j][w]} eV',fontsize=6)
+            # axs[-1].set_xlabel(f'loss (eV)',fontsize=6)
+            
+        fig.tight_layout(w_pad=-1,h_pad=-0.1)
+        
         # adds the scalebar
         if scalebar_ is not None:
-            add_scalebar(axs[-2], scalebar_)
+            add_scalebar(axs[0], scalebar_)
 
         # prints the image
         if printer is not None:
             printer.savefig(fig,
-                f'{savefolder}/{p}_{i}_embedding_maps.png', tight_layout=True)
+                f'{savefolder}/{p}_{e}_embedding_maps', tight_layout=False,verbose=True)
         
-        # plt.close(fig)
-        # plt.clf();
-        # plt.close();
+        return fig
+        
+    # TODO: use datashader    
+    def interactive_fits_Fitter1d_widget(self, model, dset,
+                                        savefolder='embeddings', overwrite=True,
+                                        scalebar_=None, printer=None):
+        """Wrapper to make fits_Fitter1D_widget interactive using Panel."""
+
+        # Panel widgets
+        p_dict = {p: i for i,p in enumerate(dset.meta['particle_list'])}
+        p_selector = pn.widgets.Select(name='Particle Index', options=p_dict)
+        e_slider = pn.widgets.IntSlider(name='Embedding Channel', start=0, end=model.num_fits - 1, value=0)
+        w_slider = pn.widgets.IntSlider(name='Loss (eV)', start=0, end=len(dset.meta['eels_axis_labels'][0]) - 1, value=0)
+        coord_text = pn.widgets.StaticText(name='Selected Coordinates', value='(a, b)')
+        
+        # Store coordinates as panel parameters
+        coords = pn.widgets.StaticText(name='Coords', value=(0, 0))
+        a_slider = pn.widgets.IntSlider(name='a', start=0, end=len(dset.meta['diff_dims'][0]) - 1, value=0)
+        b_slider = pn.widgets.IntSlider(name='b', start=0, end=len(dset.meta['diff_dims'][1]) - 1, value=0)
+
+        # # Interactive update function
+        # def update_image(event=None):
+        #     p = p_selector.value
+        #     e = e_slider.value
+        #     a, b = np.random.randint(0, dset.meta['shape_list'][p])  # Random start, user will select later
+        #     w = w_slider.value
+
+        #     # Call the original function with the selected parameters
+        #     layout = self.fits_Fitter1D_widget(p, e, a, b, w, model, dset, savefolder, overwrite, scalebar_, printer)
+        #     return layout
+
+        # # Image selection callback
+        # def on_select(event):
+        #     nonlocal coord_text
+        #     a, b = int(event.xdata), int(event.ydata)
+            # coord_text.value = f'Selected Coordinates: ({a}, {b})'
             
-    def fits_histograms(self,model,dset):
-        pass
+            # p = p_selector.value
+            # e = e_slider.value
+            # w = w_slider.value
+            # pn.state.curdoc().add_next_tick_callback(lambda: update_image())  # Redraw after selection
+
+
+        def update_image(p, e, w, a,b):
+            # a, b = coords
+            return self.fits_Fitter1D_widget(p, e, a, b, w, model, dset, savefolder, overwrite, scalebar_, printer)
+       
+        # Bind the update_image function to the widgets
+        interactive_image = pn.bind(update_image, p_selector, e_slider, w_slider, a_slider, b_slider)
         
+        # Initial plot
+        fig, ax = plt.subplots()
+        plt.rc('text', usetex=True)
+        ax.imshow(np.zeros((100, 100)))  # Placeholder
+        cid = fig.canvas.mpl_connect('button_press_event', on_select)
+
+        # Layout for the Panel application
+        widgets = pn.Row(p_selector, e_slider, w_slider, coord_text)
+        interactive_layout = pn.Column(widgets, interactive_image).servable()
+
+        return interactive_layout
+
         
 def imshow_tensor(x):
     import matplotlib.pyplot as plt
