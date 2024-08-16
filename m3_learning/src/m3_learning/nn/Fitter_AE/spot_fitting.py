@@ -7,12 +7,9 @@ import re
 import time
 from dask.diagnostics import ProgressBar
 import numpy as np
-from .. import Fitter_functions
-from .. import Regularization
+from . import Fitter_functions
 
 import torch
-
-
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -28,6 +25,10 @@ class Stacked_4DSTEM():
     saves data in h5 file with the following format:
     / <root>
     |---attrs: <>   
+    |---dataset: '/raw_data' (-1,a,b,x,y)
+        |---attrs: <>   
+    |---dataset: '/processed_data' (-1,1,x,y)
+        |---attrs: <>   
     |---group: '/metadata' 
         |---attrs: <>
         |---group: '/metadata/20deg' 
@@ -36,10 +37,6 @@ class Stacked_4DSTEM():
             ...
         ...
         ...
-    |---dataset: '/raw_data' (-1,a,b,x,y)
-        |---attrs: <>   
-    |---dataset: '/processed_data' (-1,1,x,y)
-        |---attrs: <>   
     '''
     def __init__(self,h5_filepath,file_names,diff_list,meta_list) -> None:
         self.h5_filepath = h5_filepath
@@ -246,7 +243,7 @@ class PV_CC_ST_AE_utils():
                  pv_fit_channels=128, pv_enc_channels = 128,
                  pv_ln_coef = 0.01, pv_embedding_size = 10, # A, I_b, x, y, wx, wy, nu, t
                  pv_limits =[1, 1, 10, 10, 10, 10, 0.5], # A, I_b, x, y, wx, wy
-                 fitter_function=Fitter_functions.generate_pseudovoigt,
+                 fitter_function=Fitter_functions.generate_pseudovoigt_2D,
                  masking='circle' # options: 'circle', 'square', 'threshold'
         
         ):    # TODO: add more hyperparams
@@ -412,7 +409,7 @@ class PV_CC_ST_AE_utils():
                                             reg_coef=0.,
                                             norm_order=norm_order )
             
-            print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {loss_dict['train_loss']:.2e}')
+            print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {loss_dict["train_loss"]:.2e}')
             print('.............................')
             date = today.strftime('(%Y-%m-%d, %H:%M)')
 
