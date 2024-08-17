@@ -162,7 +162,7 @@ class PV_Encoder_2D(nn.Module):
         nn (nn.Module): Torch module class
     """
 
-    def __init__(self, original_step_size, pooling_list, embedding_size, conv_size):
+    def __init__(self, original_step_size, pooling_list, embedding_size, conv_size, num_fits):
         """Build the encoder
 
         Args:
@@ -216,7 +216,7 @@ class PV_Encoder_2D(nn.Module):
             1, conv_size, 3, stride=1, padding=1, padding_mode="zeros"
         )
         self.cov2d_1 = nn.Conv2d(
-            conv_size, 1, 3, stride=1, padding=1, padding_mode="zeros"
+            conv_size, num_fits, 3, stride=1, padding=1, padding_mode="zeros"
         )
 
         self.relu_1 = nn.ReLU()
@@ -239,11 +239,11 @@ class PV_Encoder_2D(nn.Module):
             if i==3:
                 out1 = out
                 out1 = self.cov2d_1(out1) # skip connection to last layer
-                out1 = torch.flatten(out1, start_dim=1)
+                out1 = torch.flatten(out1, start_dim=2)
             out = self.block_layer[i](out)
         out = self.cov2d_1(out)
-        out = torch.flatten(out, start_dim=1)
-        out = torch.cat((out, out1), dim=1)
+        out = torch.flatten(out, start_dim=2)
+        out = torch.cat((out, out1), dim=2)
         out = self.dense(out)
         selection = self.relu_1(out)
         return selection
@@ -257,6 +257,7 @@ class PV_AE(nn.Module):
     """
 
     def __init__(self, encoder, fitter_function, 
+                 limits=[1, 1, 10, 10, 10, 10, 0.5]
                  ):
         """Build the encoder
 
@@ -267,6 +268,18 @@ class PV_AE(nn.Module):
             conv_size (Int): the value of filters number goes to each block
         """
 
-        super(PV_AE, self).__init__(original_step_size, pooling_list, embedding_size, conv_size)
-
+        super(PV_AE, self).__init__()
+        
+        self.encoder = encoder
+        self.fitter_function = fitter_function
+        self.limits = limits
+        self.device = next(self.parameters()).device
+        
+    def forward(self,tiles):
+        ''' tiles shape (batch*spots,ch,x,y)'''
+        embedding = self.encoder(tiles)
+        fits = self.fitter_function(embedding, tiles.shape[-2:], limits=self.limits, device=self.device) # (batch*spots,fits,x,y)
+        
+        if self.training: return embedding, fits.sum(axis=1)
+        else: return embedding, fits
 
