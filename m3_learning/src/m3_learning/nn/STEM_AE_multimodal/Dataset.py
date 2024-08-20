@@ -237,12 +237,12 @@ class STEM_EELS_Dataset(Dataset):
         # create and sort metadata 
         print('fetching metadata...')
         self.meta = {}
-        stem_path_list = glob.glob(f'{save_path}/*/diff*/Diffraction SI.dm4')
-        eels_ll_list = glob.glob(f'{save_path}/*/eels*/EELS LL SI.dm4')
-        eels_hl_list = glob.glob(f'{save_path}/*/eels*/EELS HL SI.dm4')
+        stem_path_list = glob.glob(f'{save_path}/TRI*/diff*/Diffraction SI.dm4')
+        eels_ll_list = glob.glob(f'{save_path}/TRI*/eels*/EELS LL SI.dm4')
+        eels_hl_list = glob.glob(f'{save_path}/TRI*/eels*/EELS HL SI.dm4')
         
         #functions for sorting
-        def get_number(path): return int(path.split('/')[-2].split('-')[-1])
+        def get_number(path): return int(path.split('/')[-2].split('-')[1])
         def get_particle(path): return path.split('/')[-3].split('TRI-8c-5-')[-1]
         stem_path_list.sort(key=get_number)
         stem_path_list.sort(key=get_particle)
@@ -269,8 +269,8 @@ class STEM_EELS_Dataset(Dataset):
                 hl = hs.load(hpath,lazy=True)
                 self.data_list.append((diff.data, ll.data, hl.data))
                 self.meta['particle_list'].append(f'AuCo({get_number(dpath):02d})')
-                if mode[0]=='kernel_sum': self.meta['shape_list'].append((diff.data.shape[0]-kernel_size,
-                                                                       diff.data.shape[1]-kernel_size))
+                if mode[0]==f'kernel_sum': self.meta['shape_list'].append((diff.data.shape[0]-kernel_size,
+                                                                                         diff.data.shape[1]-kernel_size))
                 else: self.meta['shape_list'].append((diff.data.shape[0], diff.data.shape[1]))
                 self.meta['particle_inds'].append(self.meta['particle_inds'][-1] + \
                                                   self.meta['shape_list'][-1][0]*self.meta['shape_list'][-1][1])
@@ -334,12 +334,12 @@ class STEM_EELS_Dataset(Dataset):
                                     ]),
                             'eels': [ Pipeline([('standard_scaler', StandardScaler()),
                                                 ('minmax_scaler', MinMaxScaler()) ]) for sc in range(self.eels_chs) ]
-                                      } for p in h[self.mode[0]].attrs['particle_list'] ]
+                                      } for p in self.meta['particle_list'] ]
              
             if self.mode[1]=='diff' or self.mode[1]=='both':
                 print('fitting diff scalers...') # TODO: make custom class to fit scalars nd-wise
                 tic = time.time()
-                for i,p in enumerate(tqdm(h[self.mode[0]].attrs['particle_list'])):
+                for i,p in enumerate(tqdm(self.meta['particle_list'])):
                     self.scalers[i]['diff'].fit( h[f'{self.mode[0]}/diff'][0:self.meta['length']-1:100].reshape(-1,512*512) )
                 toc = time.time()
                 print(f'\tDiffraction finished')
@@ -370,8 +370,8 @@ class STEM_EELS_Dataset(Dataset):
                 print('finding High Loss background spectrum...')
                 bkgs=[]
                 for i in tqdm(range(len(self.meta['particle_list']))):
-                    start = h[f'{self.mode[0]}'].attrs['particle_inds'][i]
-                    stop = h[f'{self.mode[0]}'].attrs['particle_inds'][i+1]
+                    start = self.meta['particle_inds'][i]
+                    stop = self.meta['particle_inds'][i+1]
                     ind_bkgs = []
                     for ind, spec_ind in enumerate(self.meta['eels_axis_inds']):
                         spec = h[f'{self.mode[0]}/eels'][start:stop,ind].mean(0)
@@ -384,8 +384,8 @@ class STEM_EELS_Dataset(Dataset):
                 print('fitting eels scalers...') # TODO: make custom class to fit scalars nd-wise
                 # toc = time.time()
                 for i,scalers in enumerate(tqdm(self.scalers)):
-                    start = h[f'{self.mode[0]}'].attrs['particle_inds'][i]
-                    stop = h[f'{self.mode[0]}'].attrs['particle_inds'][i+1]
+                    start = self.meta['particle_inds'][i]
+                    stop = self.meta['particle_inds'][i+1]
                     for ch,scaler in enumerate(scalers['eels']):
                         scaler.fit( h[f'{self.mode[0]}/eels'][start:stop,ch] - self.bkgs[i][ch])
                 # tic = time.time()
@@ -403,7 +403,7 @@ class STEM_EELS_Dataset(Dataset):
         
     def __len__(self): 
         with h5py.File(self.h5_name, 'r+') as h5:
-            return h5[self.mode[0]].attrs['length']
+            return self.meta['length']
         
     def write_means(self,overwrite_eels=False,overwrite_diff=False):
         '''assume you have already written the necessary processed datasets'''
@@ -419,19 +419,23 @@ class STEM_EELS_Dataset(Dataset):
                 h[f'{self.mode[0]}'].create_dataset('eels_mean_spectrum', shape=(len(self.meta['shape_list']),self.eels_chs,self.spec_len), dtype=float)
                 
                 for i,shape in enumerate(tqdm(self.meta['shape_list'])):
+                    if i<27: continue
                     start, stop = self.meta['particle_inds'][i], self.meta['particle_inds'][i+1]
-                    _,eels = self[start:stop]
-                    eels=np.array(eels)
+                    if stop<len(self): _,eels = self[start:stop]
+                    else: _,eels = self[start:]
                     
                     h[f'{self.mode[0]}/eels_mean_image'][start:stop] = np.array([spec.mean(axis=-1) for spec in eels])
                     h[f'{self.mode[0]}/eels_mean_spectrum'][i] = sum(eels)/len(eels)
                     h.flush()
             
-    def get_means(self,p):
-        with h5py.File(self.h5_name,'a') as h:
-            img = h[f'{self.mode[0]}/eels_mean_image'][self.meta['particle_inds'][p]:self.meta['particle_inds'][p+1]].reshape(self.meta['shape_list'][p]+(self.eels_chs,))
-            spec = h[f'{self.mode[0]}/eels_mean_spectrum'][p]
-        return img,spec
+    def get_mean_image(self,p,e):
+        with h5py.File(self.h5_name,'r+') as h:
+            return h[f'{self.mode[0]}/eels_mean_image'][self.meta['particle_inds'][p]:self.meta['particle_inds'][p+1], 
+                                                        e].reshape(self.meta['shape_list'][p])
+            
+    def get_mean_spectrum(self,p,e):
+        with h5py.File(self.h5_name,'r+') as h:
+            return h[f'{self.mode[0]}/eels_mean_spectrum'][p,e]
     
     # def __getitem__(self, index):
     #     with h5py.File(self.h5_name, 'r+') as h5:
@@ -725,7 +729,7 @@ class STEM_EELS_Dataset(Dataset):
             if isinstance(idx, tuple):
                 # Use only the first index from the first axis
                 first_index = idx[0]
-                i = bisect_right(h5[f'{self.mode[0]}'].attrs['particle_inds'], first_index) - 1
+                i = bisect_right(self.meta['particle_inds'], first_index) - 1
                 indices_list.append(first_index)
 
                 if self.mode[1] == 'eels' or self.mode[1] == 'both':
@@ -744,7 +748,7 @@ class STEM_EELS_Dataset(Dataset):
 
             else:
                 # Handle single or flattened indices
-                i = bisect_right(h5[f'{self.mode[0]}'].attrs['particle_inds'], idx) - 1
+                i = bisect_right(self.meta['particle_inds'], idx) - 1
                 indices_list.append(idx)
                 
                 if self.mode[1] == 'diff' or self.mode[1] == 'both':
