@@ -843,9 +843,8 @@ class Viz_Multimodal:
         coord_text = pn.widgets.StaticText(name='Selected Coordinates', value='(a, b)')
         
         # Store coordinates as panel parameters
-        coords = pn.widgets.StaticText(name='Coords', value=(0, 0))
-        a_slider = pn.widgets.IntSlider(name='a', start=0, end=len(dset.meta['diff_dims'][0]) - 1, value=0)
-        b_slider = pn.widgets.IntSlider(name='b', start=0, end=len(dset.meta['diff_dims'][1]) - 1, value=0)
+        a_slider = pn.widgets.IntSlider(name='a', start=0, end=dset.meta['diff_dims'][0] - 1, value=0)
+        b_slider = pn.widgets.IntSlider(name='b', start=0, end=dset.meta['diff_dims'][1] - 1, value=0)
 
         # # Interactive update function
         # def update_image(event=None):
@@ -858,11 +857,11 @@ class Viz_Multimodal:
         #     layout = self.fits_Fitter1D_widget(p, e, a, b, w, model, dset, savefolder, overwrite, scalebar_, printer)
         #     return layout
 
-        # # Image selection callback
-        # def on_select(event):
-        #     nonlocal coord_text
-        #     a, b = int(event.xdata), int(event.ydata)
-            # coord_text.value = f'Selected Coordinates: ({a}, {b})'
+        # Image selection callback
+        def on_select(event):
+            nonlocal coord_text
+            a, b = int(event.xdata), int(event.ydata)
+            coord_text.value = f'Selected Coordinates: ({a}, {b})'
             
             # p = p_selector.value
             # e = e_slider.value

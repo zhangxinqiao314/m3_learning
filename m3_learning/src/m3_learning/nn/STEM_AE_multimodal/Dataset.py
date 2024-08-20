@@ -5,6 +5,8 @@ from skimage.draw import disk
 import dask.array as da
 from dask.diagnostics import ProgressBar
 
+from itertools import zip_longest
+
 import pyNSID
 import os
 from scipy.ndimage import gaussian_filter
@@ -403,30 +405,83 @@ class STEM_EELS_Dataset(Dataset):
         with h5py.File(self.h5_name, 'r+') as h5:
             return h5[self.mode[0]].attrs['length']
         
+    def write_means(self,overwrite_eels=False,overwrite_diff=False):
+        '''assume you have already written the necessary processed datasets'''
+        with h5py.File(self.h5_name,'a') as h:
+
+            if overwrite_eels: # eels min max scaling
+                print(f'\nwriting mean eels data in {self.mode[0]}')
+                try: del h[f'{self.mode[0]}/eels_mean_image']
+                except: pass
+                try: del h[f'{self.mode[0]}/eels_mean_spectrum']
+                except: pass
+                h[f'{self.mode[0]}'].create_dataset('eels_mean_image', shape=(len(self),self.eels_chs), dtype=float)
+                h[f'{self.mode[0]}'].create_dataset('eels_mean_spectrum', shape=(len(self.meta['shape_list']),self.eels_chs,self.spec_len), dtype=float)
+                
+                for i,shape in enumerate(tqdm(self.meta['shape_list'])):
+                    start, stop = self.meta['particle_inds'][i], self.meta['particle_inds'][i+1]
+                    _,eels = self[start:stop]
+                    eels=np.array(eels)
+                    
+                    h[f'{self.mode[0]}/eels_mean_image'][start:stop] = np.array([spec.mean(axis=-1) for spec in eels])
+                    h[f'{self.mode[0]}/eels_mean_spectrum'][i] = sum(eels)/len(eels)
+                    h.flush()
+            
+    def get_means(self,p):
+        with h5py.File(self.h5_name,'a') as h:
+            img = h[f'{self.mode[0]}/eels_mean_image'][self.meta['particle_inds'][p]:self.meta['particle_inds'][p+1]].reshape(self.meta['shape_list'][p]+(self.eels_chs,))
+            spec = h[f'{self.mode[0]}/eels_mean_spectrum'][p]
+        return img,spec
     
-    # TODO: eels background subtration
-    ## TODO: fancy indexing methods
-    def __getitem__(self,index):
-        with h5py.File(self.h5_name, 'r+') as h5:
-            # which particle are we on
-            i = bisect_right(h5[f'{self.mode[0]}'].attrs['particle_inds'],index)-1
-            return_list = [index]
-            if self.mode[1]=='diff' or self.mode[1]=='both':
-                diff = h5[f'{self.mode[0]}/diff'][index]
-                diff = diff.reshape(-1,512*512)
-                diff = self.scalers[i]['diff'].transform(diff)
-                diff = diff.reshape(1,512,512)*self.BF_mask[i]
-                return_list.append(diff)
-            
-            # TODO: dask implementation? only if rly slow
-            if self.mode[1]=='eels' or self.mode[1]=='both':
-                eels_ = h5[f'{self.mode[0]}/eels'][index] # shape (num_ch, spec_len)
-                eels = np.array( [self.scalers[i]['eels'][ch].transform( 
-                                    (eels_[ch]-self.bkgs[i][ch]).reshape(1,-1) ).squeeze()\
-                        for ch in range(self.eels_chs)] )
-                return_list.append(eels)
-            
-            return return_list
+    # def __getitem__(self, index):
+    #     with h5py.File(self.h5_name, 'r+') as h5:
+    #         if isinstance(index, int):  # Single index
+    #             indices = [index]
+    #         elif isinstance(index, slice):  # Slice object
+    #             indices = range(*index.indices(len(self)))
+    #         elif isinstance(index, (list, np.ndarray)):  # Fancy indexing
+    #             indices = index
+    #         elif isinstance(index, tuple):  # Fancy indexing
+    #             indices = index
+    #         else:
+    #             raise TypeError("Index must be an integer, slice, or sequence of integers.")
+
+    #         indices_list = []
+    #         diff_list = []
+    #         eels_list = []
+
+    #         for idx in indices:
+    #             i = bisect_right(h5[f'{self.mode[0]}'].attrs['particle_inds'], idx) - 1
+    #             indices_list.append(idx)
+                
+    #             if self.mode[1] == 'diff' or self.mode[1] == 'both':
+    #                 diff = h5[f'{self.mode[0]}/diff'][idx]
+    #                 diff = diff.reshape(-1, 512 * 512)
+    #                 diff = self.scalers[i]['diff'].transform(diff)
+    #                 diff = diff.reshape(1, 512, 512) * self.BF_mask[i]
+    #                 diff_list.append(diff)
+    #             else: pass
+                
+    #             if self.mode[1] == 'eels' or self.mode[1] == 'both':
+    #                 eels_ = h5[f'{self.mode[0]}/eels'][idx]
+    #                 eels = np.array([
+    #                     self.scalers[i]['eels'][ch].transform(
+    #                         (eels_[ch] - self.bkgs[i][ch]).reshape(1, -1)
+    #                     ).squeeze()
+    #                     for ch in range(self.eels_chs)
+    #                 ])
+    #                 eels_list.append(eels)
+    #             else: pass
+
+    #         # Filter out empty lists and only return non-empty lists
+    #         results = []
+    #         results.append(indices_list)
+    #         if len(diff_list) > 0:
+    #             results.append(diff_list)
+    #         if len(eels_list) > 0:
+    #             results.append(eels_list)
+
+    #         return tuple(results)
 
     def write_processed(self,overwrite_eels=False,overwrite_diff=False):
         with h5py.File(self.h5_name,'a') as h:
@@ -491,7 +546,6 @@ class STEM_EELS_Dataset(Dataset):
                                                         self.meta['particle_inds'][i+1]] = data__
                     h.flush()             
                    
-
     def write_kernel_sum(self,ksize,overwrite_eels=False,overwrite_diff=False):
         # kshape_list = []
         # kparticle_inds = [0]
@@ -524,7 +578,7 @@ class STEM_EELS_Dataset(Dataset):
                 print(f'\nwriting eels data with kernel size {ksize}')
                 try: del h[f'kernel_sum_{ksize}/eels']
                 except: pass
-                h[f'kernel_sum_{ksize}'].create_dataset('eels', shape=(klength,self.eels_chs,self.spec_len), dtype=float)
+                h[f'kernel_sum_{ksize}'].create_dataset('eels', shape=(len(self),self.eels_chs,self.spec_len), dtype=float)
                 
                 for i,data in enumerate(tqdm(self.data_list)):
                     # find 0 peak shift
@@ -598,47 +652,6 @@ class STEM_EELS_Dataset(Dataset):
     def get_index(self,p,a,b):
         return self.meta['particle_inds'][p]+a*self.meta['diff_dims'][0]+b
     
-    # def __getitem__(self, index):
-    #     # Check if index is a slice or a single integer
-    #     if isinstance(index, slice):
-    #         # Handle slice
-    #         start, stop, step = index.indices(len(self))  # Assuming `len(self)` gives the total number of items
-    #         indices = range(start, stop, step)
-    #     else:
-    #         # Handle single index
-    #         indices = [index]
-        
-    #     with h5py.File(self.h5_name, 'r+') as h5:
-    #         # Initialize lists to store results
-    #         diffs, eels_list = [], []
-            
-    #         for idx in indices:
-    #             i = bisect_right(self.meta['particle_inds'], idx) - 1
-                
-    #             diff = h5['processed_data/diff'][idx]
-    #             diff = diff.reshape(-1, 512*512)
-    #             diff = self.scalers['diff'].transform(diff)
-    #             diff = diff.reshape(1, 512, 512)
-                
-    #             eels_ = h5['processed_data/eels'][idx]  # shape (num_ch, spec_len)
-    #             eels = np.array([self.scalers['eels'][ch].transform(eels_[ch].reshape(1,-1)).squeeze() - self.bkgs[i][ch]
-    #                             for ch in range(self.eels_chs)])
-                
-    #             diffs.append(diff * self.BF_mask[i])
-    #             eels_list.append(eels_)
-            
-    #         # Use Dask for parallel processing (if necessary)
-    #         diffs_dask = da.from_array(np.array(diffs), chunks=(1, 512, 512))
-    #         eels_dask = da.from_array(np.array(eels_list), chunks=(1, self.eels_chs, -1))  # Adjust chunks based on expected sizes
-            
-    #         # Example parallel operation with Dask (more complex operations may require custom functions)
-    #         # diffs_dask = diffs_dask.map_blocks(your_custom_function)
-            
-    #         # Return single item or slice
-    #         if isinstance(index, slice):
-    #             return index, diffs_dask.compute(), eels_dask.compute()
-    #         else:
-    #             return index, diffs_dask.compute()[0], eels_dask.compute()[0]
 
     def open_h5(self):
         return h5py.File(self.h5_name, 'r+')
@@ -655,310 +668,115 @@ class STEM_EELS_Dataset(Dataset):
     def flattened_coord(self,x,y,p):
         sh = self.meta['shape_list'][p][0]
         return x*sh[0]+y
+
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            return self._get_single_index(index)
+        elif isinstance(index, (slice, list, np.ndarray)):
+            return self._get_slice_or_fancy_index(index)
+        elif isinstance(index, tuple):
+            return self._get_tuple_index(index)
+        else:
+            raise TypeError("Index must be an integer, slice, tuple, or array-like.")
     
+    def _get_single_index(self, index):
+        with h5py.File(self.h5_name, 'r+') as h5:
+            return self._retrieve_data(h5, [index])
+
+    def _get_slice_or_fancy_index(self, index):
+        with h5py.File(self.h5_name, 'r+') as h5:
+            if isinstance(index, slice):
+                indices = list(range(*index.indices(len(self))))
+            else:  # list or np.ndarray
+                indices = list(index)
+            return self._retrieve_data(h5, indices)
+
+    def _get_tuple_index(self, index):
+        if len(index) == 1:
+            if isinstance(index[0], int):
+                return self._get_single_index(index[0])
+            else:
+                return self._get_slice_or_fancy_index(index[0])
+        else:
+            indices = []
+            for idx in index:
+                if isinstance(idx, int):
+                    indices.append([idx])
+                elif isinstance(idx, slice):
+                    indices.append(list(range(*idx.indices(len(self)))))
+                elif isinstance(idx, (list, np.ndarray)):
+                    indices.append(list(idx))
+                else:
+                    raise TypeError("Tuple elements must be an integer, slice, or array-like")
+
+            # Combine indices for multi-dimensional indexing
+            combined_indices = np.ix_(*indices)
+            flat_indices = [tuple(idx) for idx in np.nditer(combined_indices, flags=['refs_ok'], order='C')]
+
+            with h5py.File(self.h5_name, 'r+') as h5:
+                return self._retrieve_data(h5, flat_indices)
     
-# class NDStandardScaler(TransformerMixin):
-#     def __init__(self, **kwargs):
-#         self._scaler = StandardScaler(copy=True, **kwargs)
-#         self._orig_shape = None
+    def _retrieve_data(self, h5, indices):
+        indices_list = []
+        diff_list = []
+        eels_list = []
 
-#     def fit(self, X, **kwargs):
-#         X = np.array(X)
-#         # Save the original shape to reshape the flattened X later
-#         # back to its original shape
-#         if len(X.shape) > 1:
-#             self._orig_shape = X.shape[1:]
-#         X = self._flatten(X)
-#         self._scaler.fit(X, **kwargs)
-#         return self
+        for idx in indices:
+            if isinstance(idx, tuple):
+                # Use only the first index from the first axis
+                first_index = idx[0]
+                i = bisect_right(h5[f'{self.mode[0]}'].attrs['particle_inds'], first_index) - 1
+                indices_list.append(first_index)
 
-#     def transform(self, X, **kwargs):
-#         X = np.array(X)
-#         X = self._flatten(X)
-#         X = self._scaler.transform(X, **kwargs)
-#         X = self._reshape(X)
-#         return X
+                if self.mode[1] == 'eels' or self.mode[1] == 'both':
+                    # Case where index has 2 elements: (n_idx, eels_ch_idx)
+                    n_idx, eels_ch_idx = idx[0],idx[1]
 
-#     def _flatten(self, X):
-#         # Reshape X to <= 2 dimensions
-#         if len(X.shape) > 2:
-#             n_dims = np.prod(self._orig_shape)
-#             X = X.reshape(-1, n_dims)
-#         return X
+                    # Retrieve the specific slice from the dataset
+                    eels_ = h5[f'{self.mode[0]}/eels'][n_idx, eels_ch_idx]
 
-#     def _reshape(self, X):
-#         # Reshape X back to it's original shape
-#         if len(X.shape) >= 2:
-#             X = X.reshape(-1, *self._orig_shape)
-#         return X
+                    # Apply background subtraction and scaling to the slice
+                    eels = self.scalers[i]['eels'][eels_ch_idx].transform(
+                        (eels_ - self.bkgs[i][eels_ch_idx]).reshape(-1,self.spec_len) # treat as single sample
+                    ).squeeze()
+                    if len(idx) == 3: eels = eels[idx[2]]
+                    eels_list.append(eels)
 
-
-# class STEM_EELS_Kernel_Sum_Dataset(Dataset):
-#     """Class for the STEM dataset.
-#     """
-#     def __init__(self,save_path,ksize,
-#                  EELS_roi={'LL':[], 'HL': []},
-#                  **kwargs):
-#         """Initialization of the class.
-
-#         Args:
-#             save_path (string): path where the hyperspy file is located
-#             EELS_roi (dict): EELS region of interest. Separated by LL and HL. 
-#                 Entries are lists of tuples, which are indices of regions of interest.
-#                 Default {'LL':[], 'HL': []}.
-#             overwrite (bool): whether the delete and rewrite h5v file. Default False.
-#         """
-    
-#         # assert the EELS_roi is alright
-#         assert len(EELS_roi['LL']+EELS_roi['HL'])>0, 'Set regions of interest for EELS'
-        
-#         self.save_path = save_path
-#         self.h5_name = f'{save_path}/combined_kernel_sum.h5'
-#         self.ksize = ksize
-
-#         # create and sort metadata 
-#         print('fetching metadata...')
-#         self.meta = {}
-#         stem_path_list = glob.glob(f'{save_path}/*/diff*/Diffraction SI.dm4')
-#         eels_ll_list = glob.glob(f'{save_path}/*/eels*/EELS LL SI.dm4')
-#         eels_hl_list = glob.glob(f'{save_path}/*/eels*/EELS HL SI.dm4')
-        
-#         #functions for sorting
-#         def get_number(path): return int(path.split('/')[-2].split('-')[-1])
-#         def get_particle(path): return path.split('/')[-3].split('TRI-8c-5-')[-1]
-#         stem_path_list.sort(key=get_number)
-#         stem_path_list.sort(key=get_particle)
-#         eels_ll_list.sort(key=get_number)
-#         eels_ll_list.sort(key=get_particle)
-#         eels_hl_list.sort(key=get_number)
-#         eels_hl_list.sort(key=get_particle)
-        
-#         # init metadata
-#         self.meta['path_list'] = list(zip(stem_path_list,eels_ll_list,eels_hl_list))
-#         self.meta['particle_list'] = [] # names of particle 'folder(#)' TODO: make 2 digit counting number
-#         self.data_list = [] # TODO: make tuple (stem, eels)
-#         self.meta['shape_list'] = []
-#         self.meta['scale'] = [] ## TODO: implement s.axes_manager['x'].scale, shape (x,y,sig)
-#         self.bad_files = [] # TODO: if stem or eels is bad, throw out both
-#         self.meta['particle_inds'] = [0]
-#         self.meta['sample_inds'] = [0]
-
-#         # go through data files and fill metadata
-#         for i,(dpath,lpath,hpath) in enumerate(tqdm(self.meta['path_list'])):
-#             try:
-#                 diff = hs.load(dpath, lazy=True)
-#                 ll = hs.load(lpath,lazy=True)
-#                 hl = hs.load(hpath,lazy=True)
-#                 self.data_list.append((diff.data, ll.data, hl.data))
-#                 self.meta['particle_list'].append(f'AuCo({get_number(dpath):02d})')
-#                 ds,es = diff.data.shape,ll.data.shape
-#                 self.meta['shape_list'].append(((ds[0]-ksize, ds[1]-ksize, ds[2], ds[3]), 
-#                                                 (es[0]-ksize, es[1]-ksize, es[2])))
-#                 self.meta['particle_inds'].append(self.meta['particle_inds'][-1] + \
-#                                                     self.meta['shape_list'][-1][0]*self.meta['shape_list'][-1][1])
-#                 self.meta['scale'].append( (diff.axes_manager['x'].scale, 
-#                                             [ll.axes_manager['Energy loss'].scale, ll.axes_manager['Energy loss'].offset], 
-#                                             [hl.axes_manager['Energy loss'].scale, hl.axes_manager['Energy loss'].offset]) )
-#                 if i>1 and self.meta['particle_list'][-1].split('(')[0] != self.meta['particle_list'][-2].split('(')[0]:
-#                     self.meta['sample_inds'].append(i) # start of new sample        
-#             except:
-#                 self.bad_files.append((dpath,lpath,hpath))
-#                 self.meta['path_list'].remove((dpath,lpath,hpath))
-#                 print('bad:')
-#                 print('\t',dpath)
-#                 print('\t',lpath)
-#                 print('\t',hpath)
-#         print(len(self.meta['shape_list']), 'valid samples')
-#         self.length = sum( [shp[0][0]*shp[0][1] for shp in self.meta['shape_list']])
-#         self.particle_count = len(self.meta['particle_list'])
-        
-#         # get spectral data cropping region
-#         print('\ngetting spectral axis labels...')
-#         x = np.arange(1024)
-#         llx,hlx = self.get_raw_spectral_axis(1)
-#         self.raw_x_labels = np.stack([llx,hlx],axis=1)
-#         l = []
-#         maxlen=0
-#         for eV_range in EELS_roi['LL']:
-#             i0 = bisect_left(llx,eV_range[0])
-#             i1 = bisect_right(llx,eV_range[1])-1
-#             l.append((i0,i1,0))
-#             if i1-i0>maxlen: 
-#                 maxlen = i1-i0
-#         for eV_range in EELS_roi['HL']:
-#             i0 = bisect_left(hlx,eV_range[0])
-#             i1 = bisect_right(hlx,eV_range[1])-1
-#             l.append((i0,i1,1))
-#             if i1-i0>maxlen: maxlen = i1-i0
-
-#         self.ll_i0 = bisect_left(llx,0)
-#         self.meta['eels_axis_labels'] = [(i[0], i[0]+maxlen, i[2]) for i in l] # make sure they are all the same length
-#         self.spec_len = self.meta['eels_axis_labels'][0][1] - self.meta['eels_axis_labels'][0][0] + 2
-#         self.eels_chs = len(self.meta['eels_axis_labels'])
-        
-#         self.shape = ( (self.__len__(),1,512,512), (self.__len__(),self.eels_chs,self.spec_len) )
-
-#         # create h5 dataset, fill metadata, and transfer data from dm4 files to h5, and do 0 alignment
-#         with h5py.File(self.h5_name,'a') as h:
-#             if 'processed_data' not in h:
-#                 print('\nwriting processed_data h5 datasets')
-#                 overwrite_eels = True
-#                 overwrite_diff = True
-#                 h.create_group('processed_data')       
+            else:
+                # Handle single or flattened indices
+                i = bisect_right(h5[f'{self.mode[0]}'].attrs['particle_inds'], idx) - 1
+                indices_list.append(idx)
                 
-#                 for k,v in self.meta.items(): # write metadata
-#                         if isinstance(v[0],tuple):
-#                             h['processed_data'].attrs[k] = [tup[0] for tup in v]
-#                         else:
-#                             h['processed_data'].attrs[k] = v         
-                                 
-#             if overwrite_diff: # TODO take the log. min max scaling
-#                 # print('\nwriting diff datasets')
-#                 # del h['processed_data/diff']
-#                 # h['processed_data'].create_dataset('diff', shape=(self.length,1,512, 512), dtype=float)
-#                 # for i,data_ in enumerate(tqdm(self.data_list)): 
-#                 #     # 4%|▎         | 1/27 [00:18<08:10, 18.85s/it]\
-#                 #     data__ = da.log(data_[0].reshape((-1,1,512,512)) + 1)
-#                 #     data__ = (data__ - data__.min())/data__.max()
-#                 #     h['processed_data/diff'][self.meta['particle_inds'][i]:\
-#                 #                                         self.meta['particle_inds'][i+1]] = data__
-#                 #     h.flush()
-#                 pass
-                                    
-#             if overwrite_eels: # eels min max scaling
-#                 print(f'\nwriting eels data with kernel size {self.ksize}')
-#                 del h[f'processed_data/kernel_sum_{self.ksize}']
-#                 h['processed_data'].create_dataset(f'kernel_sum_{self.ksize}', shape=(self.length,self.eels_chs,self.spec_len), dtype=float)
+                if self.mode[1] == 'diff' or self.mode[1] == 'both':
+                    diff = h5[f'{self.mode[0]}/diff'][idx]
+                    diff = diff.reshape(-1, 512 * 512)
+                    diff = self.scalers[i]['diff'].transform(diff)
+                    diff = diff.reshape(1, 512, 512) * self.BF_mask[i]
+                    diff_list.append(diff)
                 
-#                 for i,data in enumerate(tqdm(self.data_list)): 
-#                     # find 0 peak shift
-#                     shift_0 = data[1].argmax(axis=2).flatten() - self.ll_i0
-                    
-#                     for ind, spec_ind in enumerate(self.meta['eels_axis_labels']):
-#                         dset_slice = h[f'processed_data/kernel_sum_{self.ksize}'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind]
-#                         istart = shift_0.rechunk(chunks=(1024,1)) + spec_ind[0]
-#                         data_ = data[spec_ind[2]+1].reshape((-1,1024)).rechunk(chunks=(1024,1024,))
-                        
-#                         # function to slice data according to peak
-#                         def slice_data(dat, start, block_info=None, investigate=False):
-#                             block_shape = dat.shape
-#                             if dat.size == 0 or start.size == 0:
-#                                 raise ValueError("Received an empty block")
-#                             # Initialize an empty array for the result
-#                             new_chunk = np.empty((block_shape[0], self.spec_len))
-#                             for i in range(block_shape[0]):
-#                                 start_idx = start[i]
-#                                 sliced = dat[i, start_idx:start_idx + self.spec_len]
-#                                 new_chunk[i] = da.log(sliced+1)#.rechunk(block_shape[0],self.spec_len)
-#                             new_chunk = (new_chunk - new_chunk.min())/new_chunk.max()
-                            
-#                             return new_chunk 
-                        
-#                         result = da.map_blocks(slice_data, data_, istart, 
-#                                                dtype=data_.dtype,
-#                                                drop_axis = [1],
-#                                                new_axis=[1], 
-#                                                chunks = (1024,self.spec_len), )     
-#                         da.store(result, dset_slice)
-#                         h['processed_data/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind] = dset_slice
-#                         h.flush()
-                        
-                    
-#             print('fitting scalers...') # TODO: make custom class to fit scalars nd-wise
-#             self.scalers = {'diff': StandardScaler(),
-#                             'eels': [StandardScaler() for sc in range(self.eels_chs)] }
-#             tic = time.time()
-#             self.scalers['diff'].fit( h['processed_data/diff'][0:self.length-1:100].reshape(-1,512*512) )
-#             toc = time.time()
-#             print(f'\tDiffraction finished: {abs(tic-toc)} s')
-            
-#             for i,scaler in enumerate(self.scalers['eels']):
-#                 scaler.fit( h['processed_data/eels'][i])
-#             tic = time.time()
-#             print(f'\tEELS finished {abs(tic-toc)} s')
+                if self.mode[1] == 'eels' or self.mode[1] == 'both':
+                    eels_ = h5[f'{self.mode[0]}/eels'][idx]
+                    eels = np.array([
+                        self.scalers[i]['eels'][ch].transform(
+                            (eels_[ch] - self.bkgs[i][ch]).reshape(1, -1)
+                        ).squeeze()
+                        for ch in range(self.eels_chs)
+                    ])
+                    eels_list.append(eels)
 
-#             ## figure out mask positions
-#             print('finding brightfield indices...')
-#             self.BF_inds = []
-#             self.BF_mask=[]
-#             for i in tqdm(range(len(self.data_list))):
-#                 start = self.meta['particle_inds'][i]
-#                 stop = self.meta['particle_inds'][i+1]
-#                 img = h['processed_data/diff'][start:stop:50,0].mean(0)
-#                 thresh = img.mean()+img.std()*30
-#                 inds = np.argwhere(img>thresh).T
-#                 self.BF_inds.append(inds)
-                
-#                 mask = np.zeros(img.shape)
-#                 mask[inds[0],inds[1]]=1
-#                 mask = binary_dilation(mask,footprint=disk(5))
-#                 mask = binary_erosion(mask,footprint=disk(2))
-#                 mask = binary_dilation(mask,footprint=disk(8))
-#                 mask = 1.-mask
-#                 self.BF_mask.append(mask)
-                
-#             ## find eels background for each sample
-#             print('finding High Loss background spectrum...')
-#             bkgs=[]
-#             for i in tqdm(range(len(self.meta['particle_list']))):
-#                 start = self.meta['particle_inds'][i]
-#                 stop = self.meta['particle_inds'][i+1]
-#                 ind_bkgs = []
-#                 for ind, spec_ind in enumerate(self.meta['eels_axis_labels']):
-#                     spec = h['processed_data/eels'][start:stop,ind].mean(0)
-#                     [a,b,c] = np.polyfit(np.arange(self.spec_len),spec,2)
-#                     x = np.linspace(0, self.spec_len-1, self.spec_len) # TODO: should I make the x-axis regular range or according to eels scale?
-#                     ind_bkgs.append(a*x**2 + b*x + c) 
-#                 bkgs.append(ind_bkgs) 
-#             self.bkgs = bkgs # TODO: should I make this into an array?
-            
-#         print('done')
+        # Convert lists to numpy arrays
+        indices_array = np.array(indices_list)
+        diff_array = np.array(diff_list) if diff_list else None
+        eels_array = np.array(eels_list) if eels_list else None
 
-#     def __len__(self):
-#         return self.length
-    
-#     # TODO: eels background subtration
-#     ## TODO: fancy indexing methods
-#     def __getitem__(self,index):
-#         with h5py.File(self.h5_name, 'r+') as h5:
-#             # which particle are we on
-#             i = bisect_right(self.meta['particle_inds'],index)-1
-            
-#             diff = h5['processed_data/diff'][index]
-#             diff = diff.reshape(-1,512*512)
-#             diff = self.scalers['diff'].transform(diff)
-#             diff = diff.reshape(1,512,512)
-            
-#             # TODO: dask implementation? only if rly slow
-#             eels_ = h5['processed_data/eels'][index] # shape (num_ch, spec_len)
-#             eels = np.array([self.scalers['eels'][ch].transform(eels_[ch].reshape(1,-1)).squeeze() - self.bkgs[i][ch] \
-#                     for ch in range(self.eels_chs)])
-            
-#             # return index, diff*self.BF_mask[i], eels_ # TODO: does this need to be returned as array?
-#             # return index, diff*self.BF_mask[i] # TODO: does this need to be returned as array?
-#             return index, eels_ # TODO: does this need to be returned as array?
-        
-#     def get_raw_spectral_axis(self,ind=0,inds=[(0,-1,0), (0,-1,1)]):
-#         x = np.arange(1024)
-#         llx = self.meta['scale'][ind][1][0]*x + \
-#                     self.meta['scale'][ind][1][1]
-#         hlx = self.meta['scale'][ind][2][0]*x + \
-#                     self.meta['scale'][ind][2][1]
-#         return llx[inds[0][0]:inds[0][1]], hlx[inds[1][0]:inds[1][1]]
+        # Return only the non-empty arrays
+        return_tuple = (indices_array,)
+        if diff_array is not None:
+            return_tuple += (diff_array,)
+        if eels_array is not None:
+            return_tuple += (eels_array,)
 
-#     def open_h5(self):
-#         return h5py.File(self.h5_name, 'r+')
+        return return_tuple
+
     
-#     def get_particle(self,i):
-#         start = self.meta['particle_inds'][i]
-#         stop = self.meta['particle_inds'][i+1]
-#         with h5py.File(self.h5_name, 'r+') as h:
-#             diff = h['processed_data/diff'][start:stop]
-#             ll = h['processed_data/ll'][start:stop]
-#             hl = h['processed_data/hl'][start:stop]
-#         return diff,ll,hl
-    
-#     def flattened_coord(self,x,y,p):
-#         sh = self.meta['shape_list'][p][0]
-#         return x*sh[0]+y
-    
+             
