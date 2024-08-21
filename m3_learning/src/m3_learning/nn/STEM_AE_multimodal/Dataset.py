@@ -418,13 +418,12 @@ class STEM_EELS_Dataset(Dataset):
                 h[f'{self.mode[0]}'].create_dataset('eels_mean_image', shape=(len(self),self.eels_chs), dtype=float)
                 h[f'{self.mode[0]}'].create_dataset('eels_mean_spectrum', shape=(len(self.meta['shape_list']),self.eels_chs,self.spec_len), dtype=float)
                 
-                for i,shape in enumerate(tqdm(self.meta['shape_list'])):
-                    if i<27: continue
+                for i in tqdm(range(len(self.meta['shape_list']))):
                     start, stop = self.meta['particle_inds'][i], self.meta['particle_inds'][i+1]
                     if stop<len(self): _,eels = self[start:stop]
                     else: _,eels = self[start:]
                     
-                    h[f'{self.mode[0]}/eels_mean_image'][start:stop] = np.array([spec.mean(axis=-1) for spec in eels])
+                    h[f'{self.mode[0]}/eels_mean_image'][start:stop,:] = eels.mean(axis=-1)
                     h[f'{self.mode[0]}/eels_mean_spectrum'][i] = sum(eels)/len(eels)
                     h.flush()
             
@@ -436,57 +435,7 @@ class STEM_EELS_Dataset(Dataset):
     def get_mean_spectrum(self,p,e):
         with h5py.File(self.h5_name,'r+') as h:
             return h[f'{self.mode[0]}/eels_mean_spectrum'][p,e]
-    
-    # def __getitem__(self, index):
-    #     with h5py.File(self.h5_name, 'r+') as h5:
-    #         if isinstance(index, int):  # Single index
-    #             indices = [index]
-    #         elif isinstance(index, slice):  # Slice object
-    #             indices = range(*index.indices(len(self)))
-    #         elif isinstance(index, (list, np.ndarray)):  # Fancy indexing
-    #             indices = index
-    #         elif isinstance(index, tuple):  # Fancy indexing
-    #             indices = index
-    #         else:
-    #             raise TypeError("Index must be an integer, slice, or sequence of integers.")
-
-    #         indices_list = []
-    #         diff_list = []
-    #         eels_list = []
-
-    #         for idx in indices:
-    #             i = bisect_right(h5[f'{self.mode[0]}'].attrs['particle_inds'], idx) - 1
-    #             indices_list.append(idx)
-                
-    #             if self.mode[1] == 'diff' or self.mode[1] == 'both':
-    #                 diff = h5[f'{self.mode[0]}/diff'][idx]
-    #                 diff = diff.reshape(-1, 512 * 512)
-    #                 diff = self.scalers[i]['diff'].transform(diff)
-    #                 diff = diff.reshape(1, 512, 512) * self.BF_mask[i]
-    #                 diff_list.append(diff)
-    #             else: pass
-                
-    #             if self.mode[1] == 'eels' or self.mode[1] == 'both':
-    #                 eels_ = h5[f'{self.mode[0]}/eels'][idx]
-    #                 eels = np.array([
-    #                     self.scalers[i]['eels'][ch].transform(
-    #                         (eels_[ch] - self.bkgs[i][ch]).reshape(1, -1)
-    #                     ).squeeze()
-    #                     for ch in range(self.eels_chs)
-    #                 ])
-    #                 eels_list.append(eels)
-    #             else: pass
-
-    #         # Filter out empty lists and only return non-empty lists
-    #         results = []
-    #         results.append(indices_list)
-    #         if len(diff_list) > 0:
-    #             results.append(diff_list)
-    #         if len(eels_list) > 0:
-    #             results.append(eels_list)
-
-    #         return tuple(results)
-
+        
     def write_processed(self,overwrite_eels=False,overwrite_diff=False):
         with h5py.File(self.h5_name,'a') as h:
             if 'processed_data' not in h:
@@ -588,7 +537,7 @@ class STEM_EELS_Dataset(Dataset):
                     # find 0 peak shift
                     shift_0 = data[1].argmax(axis=2).flatten() - self.ll_i0
                     
-                    for ind, spec_ind in enumerate(self.meta['eels_axis_labels']):
+                    for ind, spec_ind in enumerate(self.meta['eels_axis_inds']):
                         dset_slice = h[f'kernel_sum_{ksize}/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind]
                         istart = shift_0.rechunk(chunks=(1024,1)) + spec_ind[0]
                         data_ = data[spec_ind[2]+1].reshape((-1,1024)).rechunk(chunks=(1024,1024,))
@@ -607,8 +556,8 @@ class STEM_EELS_Dataset(Dataset):
                             new_chunk = (new_chunk - new_chunk.min())/new_chunk.max()
                             return new_chunk 
                     
-                    for ind, spec_ind in enumerate(self.meta['eels_axis_labels']):
-                        dset_slice = h[f'kernel_sum_{ksize}/eels'][kparticle_inds[i]:kparticle_inds[i+1],ind]
+                    for ind, spec_ind in enumerate(self.meta['eels_axis_inds']):
+                        dset_slice = h[f'kernel_sum_{ksize}/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind]
                         istart = shift_0.rechunk(chunks=(1024,1)) + spec_ind[0]
                         ch_size = int(data[1].shape[0]*data[1].shape[0]/16)
                         data_ = data[spec_ind[2]+1].reshape((-1,1024)).rechunk(chunks=(ch_size,1024,))
@@ -638,7 +587,7 @@ class STEM_EELS_Dataset(Dataset):
                             block_shape=dat.shape
                             if dat.size == 0:
                                 raise ValueError("Received an empty block")
-                            new_chunk = np.empty((kshape_list[i][0], kshape_list[i][1], block_shape[-1]))
+                            new_chunk = np.empty((self.meta['shape_list'][i][0], self.meta['shape_list'][i][1], block_shape[-1]))
                             for n in range(block_shape[0]-ksize):
                                 for m in range(block_shape[1]-ksize):
                                     new_chunk[n,m] = dat[n:n+ksize,m:m+ksize].sum(axis=(0,1))
@@ -646,11 +595,11 @@ class STEM_EELS_Dataset(Dataset):
                         
                         result = da.map_blocks(kernel_sum, result, 
                                                dtype=result.dtype,
-                                               chunks=(kshape_list[i][0], kshape_list[i][1],self.spec_len)) 
+                                               chunks=(self.meta['shape_list'][i][0], self.meta['shape_list'][i][1],self.spec_len)) 
                         result = result.reshape(-1,self.spec_len)
                         # result.compute()
                         da.store(result, dset_slice)
-                        h[f'kernel_sum_{ksize}/eels'][kparticle_inds[i]:kparticle_inds[i+1],ind] = dset_slice
+                        h[f'kernel_sum_{ksize}/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind] = dset_slice
                         h.flush()
                         
     def get_index(self,p,a,b):
