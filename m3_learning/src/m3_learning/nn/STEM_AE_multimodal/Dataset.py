@@ -423,7 +423,7 @@ class STEM_EELS_Dataset(Dataset):
                     if stop<len(self): _,eels = self[start:stop]
                     else: _,eels = self[start:]
                     
-                    h[f'{self.mode[0]}/eels_mean_image'][start:stop,:] = eels.mean(axis=-1)
+                    h[f'{self.mode[0]}/eels_mean_image'][start:stop,:] = [eels.mean(axis=-1) for spec in eels]
                     h[f'{self.mode[0]}/eels_mean_spectrum'][i] = sum(eels)/len(eels)
                     h.flush()
             
@@ -718,9 +718,9 @@ class STEM_EELS_Dataset(Dataset):
                     eels_list.append(eels)
 
         # Convert lists to numpy arrays
-        indices_array = np.array(indices_list)
-        diff_array = np.array(diff_list) if diff_list else None
-        eels_array = np.array(eels_list) if eels_list else None
+        indices_array = np.array(indices_list).squeeze()
+        diff_array = np.array(diff_list).squeeze() if diff_list else None
+        eels_array = np.array(eels_list).squeeze() if eels_list else None
 
         # Return only the non-empty arrays
         return_tuple = (indices_array,)
@@ -732,4 +732,3 @@ class STEM_EELS_Dataset(Dataset):
         return return_tuple
 
     
-             

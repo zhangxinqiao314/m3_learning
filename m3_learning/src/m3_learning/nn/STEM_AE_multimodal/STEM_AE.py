@@ -1125,10 +1125,9 @@ class FitterAutoencoder_1D():
                  x1_ch_list=[8,6,4], x1_pool=64, 
                  x2_pool_list=[16,8,4], x2_ch_list=[8,16],
                  dense_list=[24,16,8],
-                 checkpoint = None,
                  learning_rate=3e-5,
-                 emb_h5_path = './Combined_all_samples_1D_PV/embeddings_1D.h5',
-                 gen_h5_path = './Combined_all_samples_1D_PV/generated_1D.h5',):
+                 emb_h5 = './embeddings_1D.h5',
+                 gen_h5= './generated_1D.h5',):
         """_summary_
 
         Args:
@@ -1158,29 +1157,56 @@ class FitterAutoencoder_1D():
         self.flat_dim = flatten_from
         self.learning_rate = learning_rate
 
-        self.checkpoint = checkpoint
-        # self.train = train
-
-        self.emb_h5_path = emb_h5_path
-        self.gen_h5_path = gen_h5_path
+        self._checkpoint = None
+        self._folder= './save_folder'
+                
+        self.emb_h5 = emb_h5
+        self.gen_h5 = emb_h5
+        
+        self.train = False
 
         # complies the network
         self.compile_model()
-
-    def open_embedding_h(self):
-        check = self.checkpoint.split('/')[-1][:-4]
-        h = h5py.File(self.emb_h5_path,'r+')
+        
+    @property 
+    def file(self): return self._file
+        
+    @property
+    def folder(self): return self._folder
+    @folder.setter
+    def folder(self,value): self._folder = value
+    
+    @property
+    def check(self): return self._check
+    
+    @property
+    def checkpoint(self): return self._checkpoint
+    
+    @checkpoint.setter
+    def checkpoint(self, value):
+        self._checkpoint = value
         try:
-            self.embedding = h[f'embedding_{check}']
+            folder,file = os.path.split(self._checkpoint)
+            self._file = file
+            self._check = file.split('.pkl')[0]
+            self._folder = folder
+        except:
+            self.check = None
+            self.folder = None
+            self.file = None
+            
+    def open_embedding_h(self):
+        h = h5py.File(f'{self.folder}/{self.emb_h5}','r+')
+        try:
+            self.embedding = h[f'embedding_{self.check}']
         except:
             pass
         
         return h
     
     def open_generated_h(self):
-        h = h5py.File(self.gen_h5_path)
-        check = self.checkpoint.split('/')[-1][:-4]
-        try: self.generated = h[check]
+        h = h5py.File(f'{self.folder}/{self.gen_h5}','r+')
+        try: self.generated = h[self.check]
         except: pass
         return h
     
@@ -1217,7 +1243,6 @@ class FitterAutoencoder_1D():
               with_scheduler=True,
               ln_parm=2,
               epoch_=None,
-              folder_path='./',
               batch_size=32,
               best_train_loss=None,
               save_emb_every=None):
@@ -1232,16 +1257,15 @@ class FitterAutoencoder_1D():
             seed (int, optional): sets the random seed. Defaults to 12.
             epochs (int, optional): number of epochs to train. Defaults to 100.
             with_scheduler (bool, optional): sets if you should use the learning rate cycler. Defaults to True.
-            ln_parm (int, optional): order of the Ln regularization. Defaults to 1.
+            ln_parm (int, optional): order of the Ln regularization. Defaults to 2.
             epoch_ (int, optional): current epoch for continuing training. Defaults to None.
-            folder_path (str, optional): path where to save the weights. Defaults to './'.
             batch_size (int, optional): sets the batch size for training. Defaults to 32.
             best_train_loss (float, optional): current loss value to determine if you should save the value. Defaults to None.
             save_emb_every (int, optional): 
         """
         today = date.today()
         save_date=today.strftime('(%Y-%m-%d)')
-        make_folder(folder_path)
+        make_folder(self.folder)
 
         # set seed
         torch.manual_seed(seed)
@@ -1292,7 +1316,7 @@ class FitterAutoencoder_1D():
             lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
             if best_train_loss > train_loss:
                 best_train_loss = train_loss
-                self.checkpoint = folder_path + f'/{save_date}_' +\
+                self.checkpoint = self.folder + f'/{save_date}_' +\
                     f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
                     f'_trainloss:{train_loss:.4f}.pkl'
                 self.save_checkpoint(epoch,
@@ -1412,7 +1436,6 @@ class FitterAutoencoder_1D():
         self.Fitter.load_state_dict(checkpoint['Fitter'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.start_epoch = checkpoint['epoch']
-        check = path_checkpoint.split('/')[-1][:-4]
 
         try:
             with self.open_embedding_h() as h:
@@ -1428,7 +1451,7 @@ class FitterAutoencoder_1D():
             print(error)
             print('Generated not opened')
 
-    def get_embedding(self, data, batch_size=32,train=True,check=''):
+    def get_embedding(self, data, batch_size=32,train=True,check=None):
         """extracts embeddings from the data
 
         Args:
@@ -1443,8 +1466,8 @@ class FitterAutoencoder_1D():
         dataloader = DataLoader(data, batch_size, shuffle=False)
         s = data.shape[1]
         try:
-            try: h = h5py.File(self.emb_h5_path,'w')
-            except: h = h5py.File(self.emb_h5_path,'r+')
+            try: h = h5py.File(f'{self.folder}/{self.emb_h5}','w')
+            except: h = h5py.File(f'{self.folder}/{self.emb_h5}','r+')
 
             try: check = self.checkpoint.split('/')[-1][:-4]
             except: check=check
