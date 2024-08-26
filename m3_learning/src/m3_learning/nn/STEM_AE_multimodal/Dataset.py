@@ -731,4 +731,101 @@ class STEM_EELS_Dataset(Dataset):
 
         return return_tuple
 
+from bisect import bisect_left,bisect_right
+
+class EELS_Embedding_Dataset():
+    def __init__(self,dset,model):
+        self.dset = dset
+        self.model = model
+        self.h5_name = f'{self.model.folder}/{self.model.emb_h5}'
+        self.embs = None
+        self.fits =  None
+    
+    def __len__(self):
+        return len(self.dset)
+
+    def graph_fits(self,i,e):
+        _,fits = self[i]
+        _,eels = self.dset[i]
+        # plt.figure(figsize=(2,2))
+        plt.plot(eels[e],linewidth=1)
+        plt.plot(fits[e].sum(axis=0),linewidth=1)
+        plt.show()
+
+    def get_threshold_channels(self, active_limit=.20, sparse_limit=.2):
+        '''fraction of the max. threshold for "active" channels
+        fraction of the max of channel. threshold for sparse channels
+        '''
+        with self.open_h5() as h:
+            emb = h[f'fits_{self.model.check}']
+            data = emb[::30].sum(axis=(0,1,3))
+            max_ = data.max()
+            active = np.argwhere(data>max_*active_limit)
+            sparse = np.argwhere((data<=max_*active_limit) * (data>max_*sparse_limit))
+        return active.flatten(), sparse.flatten()
+
+    def open_h5(self):
+        # with h5py.File(self.embedding_path,'r+') as h:
+        #     self.embs = h['embedding_'+self.model.check]
+        #     self.fits = h['fits'+self.model.check]
+        return h5py.File(self.h5_name,'r+')
+    
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            return self._get_single_index(index)
+        elif isinstance(index, (slice, list, np.ndarray)):
+            return self._get_slice_or_fancy_index(index)
+        elif isinstance(index, tuple):
+            return self._get_tuple_index(index)
+        else:
+            raise TypeError("Index must be an integer, slice, tuple, or array-like.")
+    
+    def _get_single_index(self, index):
+        with h5py.File(self.h5_name, 'r+') as h5:
+            return self._retrieve_data(h5, [index])
+
+    def _get_slice_or_fancy_index(self, index):
+        with h5py.File(self.h5_name, 'r+') as h5:
+            if isinstance(index, slice):
+                indices = list(range(*index.indices(len(self))))
+            else:  # list or np.ndarray
+                indices = list(index)
+            return self._retrieve_data(h5, indices)
+
+    def _get_tuple_index(self, index):
+        if len(index) == 1:
+            if isinstance(index[0], int):
+                return self._get_single_index(index[0])
+            else:
+                return self._get_slice_or_fancy_index(index[0])
+        else:
+            indices = []
+            for idx in index:
+                if isinstance(idx, int):
+                    indices.append([idx])
+                elif isinstance(idx, slice):
+                    indices.append(list(range(*idx.indices(len(self)))))
+                elif isinstance(idx, (list, np.ndarray)):
+                    indices.append(list(idx))
+                else:
+                    raise TypeError("Tuple elements must be an integer, slice, or array-like")
+
+            # Combine indices for multi-dimensional indexing
+            combined_indices = np.ix_(*indices)
+            flat_indices = [tuple(idx) for idx in np.nditer(combined_indices, flags=['refs_ok'], order='C')]
+
+            with h5py.File(self.h5_name, 'r+') as h5:
+                return self._retrieve_data(h5, flat_indices)
+    
+    def _retrieve_data(self, h5, indices):
+        # indices_list = []
+        emb_list = []
+        fits_list = []
+
+        for idx in indices:
+            emb_list.append(h5[f'embedding_{self.model.check}'][idx])
+            fits_list.append(h5[f'fits_{self.model.check}'][idx])
+        
+        return np.array(emb_list).squeeze(), np.array(fits_list).squeeze()
+
     
