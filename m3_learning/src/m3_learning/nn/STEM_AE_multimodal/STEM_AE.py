@@ -3032,80 +3032,39 @@ def get_lorentzian_parameters_1D(embedding,limits,kernel_size,amp_activation=nn.
     eta = (0.5*nn.Tanh()(embedding[:,:,2]) + 0.5)
     return amplitude,gamma_x, eta # look at limits after activations
 
-def generate_pseudovoigt_1D(embedding, dset, limits=[1,975,25,1,25,1], device='cpu',return_params=False):
-    '''embedding is A_g, x, sigma, A_l, gamma, nu. shape should be (batch*eels_ch, num_peaks, spec_len)'''
+def generate_pseudovoigt_1D(embedding, dset, limits=[1,1,975,975,1], device='cpu',return_params=False):
+    '''embedding is: 
+        A: Area under curve
+        I_b: baseline intensity
+        x: mean x of the distributions
+        wx: x FWHM
+        nu: lorentzian character fraction
+        t: rotation angle
+       
+       shape should be (_, num_fits, x_, y_)
+    '''
     
-    a_g,mean_x,cov_x = get_gaussian_parameters_1D(embedding[:,:,:3], limits, dset.spec_len)
-    a_l,gamma_x, eta = get_lorentzian_parameters_1D(embedding[:,:,-3:],limits[-2:], dset.spec_len)
+    A = limits[0] * nn.ReLU()(embedding[..., 0])
+    Ib = limits[1] * nn.ReLU()(embedding[..., 1])
+    x = torch.clamp(limits[2]/2 * nn.Tanh()(embedding[..., 2]) + limits[2]/2, min=1e-3)
+    w = torch.clamp(limits[3]/2 * nn.Tanh()(embedding[..., 3]) + limits[3]/2, min=1e-3)
+    nu = 0.5 * nn.Tanh()(embedding[..., 4]) + 0.5
+
+    s = x.shape  # (_, num_fits)
     
-    s = mean_x.shape
-    x = torch.arange(dset.spec_len, dtype=torch.float32).repeat(s[0],s[1],1).to(device)
+    x_ = torch.arange(dset.spec_len, dtype=torch.float32).repeat(s[0],s[1],1).to(device)
     
     # Gaussian component
-    gaussian = a_g.unsqueeze(-1)* torch.exp(
-        -0.5 * ((x-mean_x.unsqueeze(-1)) / cov_x.view(s[0],s[1],1))**2 )
+    gaussian = A.unsqueeze(-1)*(4*torch.log(2)/torch.pi)**0.5 / w.unsqueeze(-1) * torch.exp(-4*torch.log(2) / w.unsqueeze(-1)**2 * (x_-x.unsqueeze(-1))**2)
 
     # Lorentzian component (simplified version)
-    lorentzian = a_l.unsqueeze(-1) *(
-            gamma_x.view(s[0],s[1],1)/ ((x-mean_x.unsqueeze(-1))**2+gamma_x.view(s[0],s[1],1)**2) )
+    lorentzian = A.unsqueeze(-1)*(2/torch.pi * w.unsqueeze(-1) / (4*(x-x.unsqueeze(-1))**2 + w.unsqueeze(-1)**2))
     
     # Pseudo-Voigt profile
-    pseudovoigt = eta.unsqueeze(-1) * lorentzian + \
-                    (1 - eta.unsqueeze(-1)) * gaussian
+    pseudovoigt = Ib + nu.unsqueeze(-1)*lorentzian + (1-nu.unsqueeze(-1))*gaussian
 
-    if return_params: return pseudovoigt.to(torch.float32), torch.stack([a_g,mean_x,cov_x,a_l,gamma_x,eta],axis=2)
+    if return_params: return pseudovoigt.to(torch.float32), torch.stack([A,Ib,x,w,nu],axis=2)
     return pseudovoigt.to(torch.float32)
-
-    # chatgpt pseudovoight
-    # Example parameters for n Pseudo-Voigt functions
-    n = 3  # Number of functions
-    x = torch.linspace(-5, 5, 100)  # Values to evaluate the functions at
-    eta = torch.tensor([0.3, 0.5, 0.7])  # Mixing parameters for each function
-    mu = torch.tensor([0, 1, -1])  # Positions for each function
-    sigma = torch.tensor([1, 0.5, 1.5])  # Widths for each function
-
-    # Reshape tensors for broadcasting
-    x_expanded = x.unsqueeze(1)  # Shape: [100, 1]
-    mu_expanded = mu.unsqueeze(0)  # Shape: [1, n]
-    sigma_expanded = sigma.unsqueeze(0)  # Shape: [1, n]
-    eta_expanded = eta.unsqueeze(0)  # Shape: [1, n]
-
-    # Lorentzian and Gaussian components
-    L = sigma_expanded ** 2 / ((x_expanded - mu_expanded) ** 2 + sigma_expanded ** 2)
-    G = torch.exp(-0.5 * ((x_expanded - mu_expanded) ** 2) / (sigma_expanded ** 2))
-
-    # Pseudo-Voigt function
-    PV = eta_expanded * L + (1 - eta_expanded) * G
-
-    # Sum over n functions
-    sum_PV = PV.sum(dim=1)
-
-    # Now `sum_PV` is the sum of n Pseudo-Voigt functions evaluated at `x`
-    
-    # Amp = params[:, 0].type(torch.complex128)
-    # w_0 = params[:, 1].type(torch.complex128)
-    # Q = params[:, 2].type(torch.complex128)
-    # phi = params[:, 3].type(torch.complex128)
-    # wvec_freq = torch.tensor(wvec_freq)
-
-    # Amp = torch.unsqueeze(Amp, 1)
-    # w_0 = torch.unsqueeze(w_0, 1)
-    # phi = torch.unsqueeze(phi, 1)
-    # Q = torch.unsqueeze(Q, 1)
-
-    # wvec_freq = wvec_freq.to(device)
-
-    # numer = Amp * torch.exp((1.j) * phi) * torch.square(w_0)
-    # den_1 = torch.square(wvec_freq)
-    # den_2 = (1.j) * wvec_freq.to(device) * w_0 / Q
-    # den_3 = torch.square(w_0)
-
-    # den = den_1 - den_2 - den_3
-
-    # func = numer / den
-
-    # return func
-
       
 class ConvBlock_1D(nn.Module):
     """Convolutional Block with 3 convolutional layers, 1 layer normalization layer with ReLU and ResNet
