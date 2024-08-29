@@ -9,7 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-from m3_learning.nn.Regularization.Regularizers import ContrastiveLoss, DivergenceLoss
+from m3_learning.nn.Regularization.Regularizers import ContrastiveLoss, DivergenceLoss, Sparse_Max_Loss, Weighted_LN_loss
 from m3_learning.nn.random import random_seed
 from m3_learning.optimizers.AdaHessian import AdaHessian
 from m3_learning.util.file_IO import make_folder
@@ -29,6 +29,9 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 
 import matplotlib.pyplot as plt
+import wandb
+
+# wandb api key: 727b04fe540133105c81a885cc6014d625240436
 
 ## TODO: add 1d version of all classes, with Attention
 ## TODO: add make sure we can easily access rotations and run encoder/decoder separately
@@ -1127,7 +1130,9 @@ class FitterAutoencoder_1D():
                  dense_list=[24,16,8],
                  learning_rate=3e-5,
                  emb_h5 = './embeddings_1D.h5',
-                 gen_h5= './generated_1D.h5',):
+                 gen_h5= './generated_1D.h5',
+                 folder='./save_folder',
+                 wandb_project = None):
         """_summary_
 
         Args:
@@ -1158,7 +1163,8 @@ class FitterAutoencoder_1D():
         self.learning_rate = learning_rate
 
         self._checkpoint = None
-        self._folder= './save_folder'
+        self._folder = folder
+        self.wandb_project = wandb_project
                 
         self.emb_h5 = emb_h5
         self.gen_h5 = emb_h5
@@ -1235,9 +1241,10 @@ class FitterAutoencoder_1D():
     def Train(self,
               data,
               max_learning_rate=1e-4,
-              coef_1=0,
+              coef_1=0, 
               coef_2=0,
               coef_3=0,
+              coef_4=0,
               seed=12,
               epochs=100,
               with_scheduler=True,
@@ -1245,24 +1252,29 @@ class FitterAutoencoder_1D():
               epoch_=None,
               batch_size=32,
               best_train_loss=None,
-              save_emb_every=None):
-        """function that trains the model
-
-        Args:
-            data (torch.tensor): data to train the model
-            max_learning_rate (float, optional): sets the max learning rate for the learning rate cycler. Defaults to 1e-4.
-            coef_1 (float, optional): hyperparameter for ln loss. Defaults to 0.
-            coef_2 (float, optional): hyperparameter for contrastive loss. Defaults to 0.
-            coef_3 (float, optional): hyperparameter for divergency loss. Defaults to 0.
-            seed (int, optional): sets the random seed. Defaults to 12.
-            epochs (int, optional): number of epochs to train. Defaults to 100.
-            with_scheduler (bool, optional): sets if you should use the learning rate cycler. Defaults to True.
-            ln_parm (int, optional): order of the Ln regularization. Defaults to 2.
-            epoch_ (int, optional): current epoch for continuing training. Defaults to None.
-            batch_size (int, optional): sets the batch size for training. Defaults to 32.
-            best_train_loss (float, optional): current loss value to determine if you should save the value. Defaults to None.
-            save_emb_every (int, optional): 
-        """
+              save_emb_every=None,
+              minibatch_logging_rate=None,
+              wandb_init={}):
+        """Function that trains the model
+        
+            Args:
+                data (torch.tensor): Data to train the model.
+                max_learning_rate (float, optional): Sets the max learning rate for the learning rate cycler. Defaults to 1e-4.
+                coef_1 (float, optional): Hyperparameter for ln loss. Defaults to 0.
+                coef_2 (float, optional): Hyperparameter for contrastive loss. Defaults to 0.
+                coef_3 (float, optional): Hyperparameter for divergency loss. Defaults to 0.
+                coef_4 (float, optional): Hyperparameter for an additional loss term. Defaults to 0.
+                seed (int, optional): Sets the random seed. Defaults to 12.
+                epochs (int, optional): Number of epochs to train. Defaults to 100.
+                with_scheduler (bool, optional): Sets if you should use the learning rate cycler. Defaults to True.
+                ln_parm (int, optional): Order of the Ln regularization. Defaults to 2.
+                epoch_ (int, optional): Current epoch for continuing training. Defaults to None.
+                batch_size (int, optional): Sets the batch size for training. Defaults to 32.
+                best_train_loss (float, optional): Current loss value to determine if you should save the value. Defaults to None.
+                save_emb_every (int, optional): Frequency (in epochs) to save embeddings. Defaults to None.
+                minibatch_logging_rate (int, optional): Frequency (in minibatches) to log training progress. Defaults to None.
+                wandb_init (dict, optional): Initialization parameters for Weights & Biases logging. Defaults to {}. 
+"""
         today = date.today()
         save_date=today.strftime('(%Y-%m-%d)')
         make_folder(self.folder)
@@ -1294,6 +1306,11 @@ class FitterAutoencoder_1D():
         else:
             self.start_epoch = epoch_
 
+        if self.wandb_project is not None:  
+            wandb_init['project'] = self.wandb_project
+            wandb.init(**wandb_init)
+            config={} )# figure out config later
+            
         # training loop
         for epoch in range(self.start_epoch, N_EPOCHS):
             fill_embeddings = False
@@ -1303,28 +1320,28 @@ class FitterAutoencoder_1D():
                 fill_embeddings = self.get_embedding(data, train=True)
 
 
-            train = self.loss_function(
-                self.DataLoader_, coef_1, coef_2, coef_3, ln_parm,
-                fill_embeddings=fill_embeddings)
-            train_loss = train
-            train_loss /= len(self.DataLoader_)
+            loss_dict = self.loss_function(
+                self.DataLoader_, coef_1, coef_2, coef_3, coef_4, ln_parm,
+                fill_embeddings=fill_embeddings, minibatch_logging_rate=minibatch_logging_rate)
+            # divide by batches inplace
+            loss_dict.update( (k,v/len(self.DataLoader_)) for k,v in loss_dict.items())
+            
             print(
-                f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {train_loss:.4f}')
+                f'Epoch: {epoch:03d}/{N_EPOCHS:03d} | Train Loss: {loss_dict["train_loss"]:.4f}')
             print('.............................')
 
           #  schedular.step()
             lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
-            if best_train_loss > train_loss:
-                best_train_loss = train_loss
-                self.checkpoint = self.folder + f'/{save_date}_' +\
-                    f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
-                    f'_trainloss:{train_loss:.4f}.pkl'
-                self.save_checkpoint(epoch,
-                                     train_loss=train_loss,
-                                     coef_1=coef_1, 
-                                     coef_2=coef_2,
-                                     coef_3=coef_3,
-                                     ln_parm=ln_parm)
+            self.checkpoint = self.folder + f'/{save_date}_' +\
+                f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
+                f'_trainloss:{loss_dict["train_loss"]:.4f}.pkl'
+            self.save_checkpoint(epoch,
+                                loss_dict=loss_dict,
+                                coef_1=coef_1, 
+                                coef_2=coef_2,
+                                coef_3=coef_3,
+                                coef_4=coef_4,
+                                ln_parm=ln_parm)
 
             if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
                 h = self.embedding.file
@@ -1345,30 +1362,33 @@ class FitterAutoencoder_1D():
         if scheduler is not None:
             scheduler.step()
 
-    def save_checkpoint(self,epoch,**kwargs):
+    def save_checkpoint(self,epoch,loss_dict,**kwargs):
         checkpoint = {
             "Fitter": self.Fitter.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             "epoch": epoch,
-            'loss_dict': kwargs
+            'loss_dict': loss_dict,
+            'loss_params': kwargs,
         }
         torch.save(checkpoint, self.checkpoint)
 
     def loss_function(self,
                       train_iterator,
-                      coef=0,
                       coef1=0,
                       coef2=0,
+                      coef3=0,
+                      coef4=0,
                       ln_parm=1,
                       beta=None,
-                      fill_embeddings=False):
+                      fill_embeddings=False,
+                      minibatch_logging_rate=None):
         """computes the loss function for the training
 
         Args:
             train_iterator (torch.Dataloader): dataloader for the training
-            coef (float, optional): Ln hyperparameter. Defaults to 0.
-            coef1 (float, optional): hyperparameter for contrastive loss. Defaults to 0.
-            coef2 (float, optional): hyperparameter for divergence loss. Defaults to 0.
+            coef1 (float, optional): Ln hyperparameter. Defaults to 0.
+            coef2 (float, optional): hyperparameter for contrastive loss. Defaults to 0.
+            coef3 (float, optional): hyperparameter for divergence loss. Defaults to 0.
             ln_parm (float, optional): order of the regularization. Defaults to 1.
             beta (float, optional): beta value for VAE. Defaults to None.
 
@@ -1379,14 +1399,24 @@ class FitterAutoencoder_1D():
         self.Fitter.train()
 
         # loss of the epoch
-        train_loss = 0
-        con_l = ContrastiveLoss(coef1).to(self.device)
+        loss_dict = {'weighted_ln_loss': 0,
+                     'contras_loss': 0,
+                     'maxi_loss': 0,
+                     'mse_loss': 0,
+                     'train_loss': 0,
+                     'sparse_max_loss': 0,
+                     }
+        ln_ = Weighted_LN_loss(coef=coef1,channels=self.num_fits).to(self.device)
+        con_l = ContrastiveLoss(coef2).to(self.device)
+        maxi_ = DivergenceLoss(train_iterator.batch_size, coef3).to(self.device)
+        sparse_max = Sparse_Max_Loss(min_threshold=self.learning_rate,
+                                        channels=self.num_fits, 
+                                        coef=coef4).to(self.device)
         
-        for idx,x in tqdm(train_iterator, leave=True, total=len(train_iterator)):
+        for i,(idx,x) in enumerate(tqdm(train_iterator, leave=True, total=len(train_iterator))):
             # tic = time.time()
 
             x = x.to(self.device, dtype=torch.float)
-            maxi_ = DivergenceLoss(x.shape[0], coef2).to(self.device)
 
             # update the gradients to zero
             self.optimizer.zero_grad()
@@ -1394,21 +1424,35 @@ class FitterAutoencoder_1D():
             if beta is None: embedding, predicted_x = self.Fitter(x)
             else: embedding, sd, mn, predicted_x = self.Fitter(x)
 
-            if coef > 0: reg_loss_1 = coef*torch.norm(embedding[:,:,[0,3]], ln_parm).to(self.device)/x.shape[0]
+            if coef1 > 0: 
+                reg_loss_1 = ln_(embedding[:,:,0])
+                loss_dict['weighted_ln_loss']+=reg_loss_1
             else: reg_loss_1 = 0
 
-            contras_loss = con_l(embedding[:,:,:1])
-            maxi_loss = maxi_(embedding[:,:,:1])
-
+            if coef2 > 0: 
+                contras_loss = con_l(embedding[:,:,0])
+                loss_dict['contras_loss']+=contras_loss
+            else: contras_loss = 0
+                
+            if coef3 > 0: 
+                maxi_loss = maxi_(embedding[:,:,0])
+                loss_dict['maxi_loss']+=maxi_loss
+            else: maxi_loss = 0
+            
+            if coef4 > 0: # sparse_max_loss
+                sparse_max_loss = sparse_max(embedding[:,:,0])
+                loss_dict['sparse_max_loss']+=sparse_max_loss
+            else: sparse_max_loss = 0
             # reconstruction loss
             mask = (x!=0) # only compare with non0 eels. Otherwise, too noisy and biased
             loss = F.mse_loss(x, predicted_x, reduction='mean');
             loss = (loss*mask.float()).sum()
             loss /= mask.sum()
 
+            loss_dict['mse_loss'] += loss.item()
+            
             loss = loss + reg_loss_1 + contras_loss - maxi_loss
-
-            train_loss += loss.item()
+            loss_dict['train_loss'] += loss.item()
 
             # backward pass
             loss.backward()
@@ -1422,8 +1466,10 @@ class FitterAutoencoder_1D():
                 sorted = sorted.detach().numpy()
                 self.embedding[sorted] = embedding[indices].cpu().detach().numpy()
                 # print('\tt', abs(tic-toc)) # 2.7684452533721924
+            if minibatch_logging_rate is not None: 
+                if i%minibatch_logging_rate==0: wandb.log({k: v/(i+1) for k,v in loss_dict.items()})
 
-        return train_loss
+        return loss_dict
 
     def load_weights(self, path_checkpoint):
         """loads the weights from a checkpoint
@@ -1436,7 +1482,6 @@ class FitterAutoencoder_1D():
         self.Fitter.load_state_dict(checkpoint['Fitter'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.start_epoch = checkpoint['epoch']
-
         try:
             with self.open_embedding_h() as h:
                 print('Generated available')
@@ -1451,6 +1496,19 @@ class FitterAutoencoder_1D():
             print(error)
             print('Generated not opened')
 
+        
+    def load_loss_data(self, path_checkpoint):
+        """loads the weights from a checkpoint
+
+        Args:
+            path_checkpoint (str): path where checkpoints are saved 
+        """
+        checkpoint = torch.load(path_checkpoint)
+        start_epoch = checkpoint['epoch']
+        loss_dict = checkpoint['loss_dict']
+        loss_params = checkpoint['loss_params']
+        return start_epoch,loss_dict, loss_params
+    
     def get_embedding(self, data, batch_size=32,train=True,check=None):
         """extracts embeddings from the data
 
@@ -2546,11 +2604,10 @@ class Multiscale1DFitter(nn.Module):
 
         # passes to the pytorch fitting function
         fits,params = self.function(
-            embedding, self.x_data, limits=self.limits, device=self.device,return_params=True)
+            embedding, self.x_data, limits=self.limits, device=self.device, return_params=True )
         # print('fitted shape:', fits.shape)
         
-        if not return_sum:
-            return params, fits
+        if not return_sum: return params, fits
         
         out = fits.sum(axis=1).reshape(s)
 
@@ -3032,8 +3089,8 @@ def get_lorentzian_parameters_1D(embedding,limits,kernel_size,amp_activation=nn.
     eta = (0.5*nn.Tanh()(embedding[:,:,2]) + 0.5)
     return amplitude,gamma_x, eta # look at limits after activations
 
-def generate_pseudovoigt_1D(embedding, dset, limits=[1,1,975,975,1], device='cpu',return_params=False):
-    '''embedding is: 
+def generate_pseudovoigt_1D(embedding, dset, limits=[1,1,975,975], device='cpu',return_params=False):
+    '''https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9330705/embedding is: 
         A: Area under curve
         I_b: baseline intensity
         x: mean x of the distributions
@@ -3043,27 +3100,29 @@ def generate_pseudovoigt_1D(embedding, dset, limits=[1,1,975,975,1], device='cpu
        
        shape should be (_, num_fits, x_, y_)
     '''
-    
-    A = limits[0] * nn.ReLU()(embedding[..., 0])
-    Ib = limits[1] * nn.ReLU()(embedding[..., 1])
-    x = torch.clamp(limits[2]/2 * nn.Tanh()(embedding[..., 2]) + limits[2]/2, min=1e-3)
-    w = torch.clamp(limits[3]/2 * nn.Tanh()(embedding[..., 3]) + limits[3]/2, min=1e-3)
-    nu = 0.5 * nn.Tanh()(embedding[..., 4]) + 0.5
+        
+    A = limits[0] * nn.ReLU()(embedding[..., 0]) # area under curve
+    # Ib = limits[1] * nn.ReLU()(embedding[..., 1])
+    x = torch.clamp(limits[1]/2 * nn.Tanh()(embedding[..., 1]) + limits[1]/2, min=1e-3) # mean
+    w = torch.clamp(limits[2]/2 * nn.Tanh()(embedding[..., 2]) + limits[2]/2, min=1e-3) # fwhm
+    nu = 0.5 * nn.Tanh()(embedding[..., 3]) + 0.5 # fraction voight character
 
     s = x.shape  # (_, num_fits)
     
     x_ = torch.arange(dset.spec_len, dtype=torch.float32).repeat(s[0],s[1],1).to(device)
     
     # Gaussian component
-    gaussian = A.unsqueeze(-1)*(4*torch.log(2)/torch.pi)**0.5 / w.unsqueeze(-1) * torch.exp(-4*torch.log(2) / w.unsqueeze(-1)**2 * (x_-x.unsqueeze(-1))**2)
+    gaussian = A.unsqueeze(-1)*(4*torch.log(torch.tensor(2))/torch.pi)**0.5 / w.unsqueeze(-1) * \
+            torch.exp(-4*torch.log(torch.tensor(2)) / w.unsqueeze(-1)**2 * (x_-x.unsqueeze(-1))**2)
 
     # Lorentzian component (simplified version)
-    lorentzian = A.unsqueeze(-1)*(2/torch.pi * w.unsqueeze(-1) / (4*(x-x.unsqueeze(-1))**2 + w.unsqueeze(-1)**2))
+    lorentzian = A.unsqueeze(-1)*( 2/torch.pi * w.unsqueeze(-1) / \
+                                   (4*(x_-x.unsqueeze(-1))**2 + w.unsqueeze(-1)**2) )
     
     # Pseudo-Voigt profile
-    pseudovoigt = Ib + nu.unsqueeze(-1)*lorentzian + (1-nu.unsqueeze(-1))*gaussian
+    pseudovoigt = nu.unsqueeze(-1)*lorentzian + (1-nu.unsqueeze(-1))*gaussian #+  Ib.unsqueeze(-1)
 
-    if return_params: return pseudovoigt.to(torch.float32), torch.stack([A,Ib,x,w,nu],axis=2)
+    if return_params: return pseudovoigt.to(torch.float32), torch.stack([A,x,w,nu],axis=2)
     return pseudovoigt.to(torch.float32)
       
 class ConvBlock_1D(nn.Module):

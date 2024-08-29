@@ -78,3 +78,47 @@ class DivergenceLoss(nn.Module):
         loss = loss / self.batch_size
 
         return loss
+
+
+class Weighted_LN_loss(nn.Module):
+    def __init__(self, ln_parm=2, coef=0.01, channels=1):
+        super(Weighted_LN_loss, self).__init__()        
+        self.ln_parm = ln_parm
+        self.coef = coef
+        self.channels = channels
+        
+    def forward(self,x):
+        loss = (x**self.ln_parm).sum(dim=0)**(1/self.ln_parm)
+        loss = loss * torch.linspace(0,1,self.channels).to(x.device) # penalize each channel using a different coefficient
+        return loss.mean()*self.coef
+
+class Sparse_Max_Loss(nn.Module): #TODO: break into channel-scaled coef loss and sparse max loss
+    def __init__(self,min_threshold=3e-5,coef=0.01,channels=1,ln_parm=2):
+        """_summary_
+
+        Args:
+            min_threshold (float, optional): if input is less than this value, it will not be penalized. Defaults to 3e-5. should not be too large
+            coef (float, optional): scale this loss value. Defaults to 1.
+        """        
+        super(Sparse_Max_Loss, self).__init__()        
+        self.coef = coef
+        self.ln_parm=2
+        self.threshold = min_threshold
+        
+    def forward(self,x):
+        ''' x (tensor): shape (batchsize, n). n is the number of channels '''
+        # 1 
+        loss = torch.norm(x, self.ln_parm, dim=0).to(x.device) /x.shape[0] # take batchnorm. retain fit channels
+        loss = F.threshold(loss, self.threshold, 0) # set nonactive channels to 0
+        mask = torch.argwhere(loss>0) # exclude nonactive channels from normalization
+        return self.coef *(1-loss[mask]).sum()/len(mask)
+    
+        # 2
+        loss = 1 - torch.norm(x, self.ln_parm, dim=0).to(x.device) /x.shape[0] # take batchnorm. retain fit channels
+        mask = torch.argwhere(loss>(1-self.threshold)) # threshold 
+        loss = torch.linspace(0,1,self.channels).to(x.device) *(1-loss)# penalize each channel using a different coefficient
+        self.coef .sum() /non_0 
+        loss = F.threshold(loss, self.threshold, 0) # set nonactive channels to 0
+        non_0 = len( torch.argwhere(loss>0) ) # divide loss by this to exclude nonactive channels from normalization
+    
+    

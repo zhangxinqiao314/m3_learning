@@ -910,7 +910,8 @@ class Viz_EELS_hv():
         self.embedding = embedding
         
         self.particle_dict = {k:v for v,k in enumerate(dset.meta['particle_list'])}
-        self.parameter_names = [ 'A_g', 'x', 'sigma', 'A_l', 'gamma', 'nu']
+        self.parameter_labels = [ 'A', 'Ib', 'x', 'w', 'nu']
+
         self.active_channels = list(range(model.num_fits))
         self.sparse_channels = []
         self._view_channels = 'active'
@@ -927,7 +928,7 @@ class Viz_EELS_hv():
                                 ).opts(tools=['tap'], axiswise=True, shared_axes=False)
         
         # use as input on dynamic maps
-        self.point_stream = Tap( source=self._blank_img, x=0, y=0 )
+        self.point_stream = Tap( source=self.blank_emb, x=0, y=0 )
         self.spectrum_stream = Tap(source=self.blank_spec, x=0) 
         
         # multiply to dynamic maps you wanna display on
@@ -937,17 +938,13 @@ class Viz_EELS_hv():
                                             ).opts(xlim=(0, self.dset.spec_len), ylim=(0, 1), 
                                                     axiswise=False, shared_axes=False)
             
-    def lru_wrapper(self,_update,p):
-        @functools.lru_cache(len(self.dset.meta['particle_list']))
-        def new_update(p): return _update(p)
-        return new_update
-    
     def set_embedding_threshold(self, active_limit=.25, sparse_limit=.1):
         active_channels, sparse_channels = self.embedding.get_threshold_channels(active_limit=active_limit, sparse_limit=sparse_limit)
         self.active_channels, self.sparse_channels = active_channels,sparse_channels
 
-    def _blank_img(self,p): return hv.Image( np.zeros(self.dset.meta['shape_list'][p]) 
-                                            ).opts(tools=['tap'], axiswise=True, shared_axes=False)
+    def _blank_img(self,p):        
+        return hv.Image( np.zeros(self.dset.meta['shape_list'][p]) 
+                        ).opts(tools=['tap'], axiswise=True, shared_axes=False)
     
     def _show_dot(self, p, x, y): return hv.Scatter([(int(x), int(y))]).opts(xlim=(0, self.dset.meta['shape_list'][p][0]), 
                                                 ylim=(0, self.dset.meta['shape_list'][p][1]), 
@@ -957,115 +954,194 @@ class Viz_EELS_hv():
     def _show_vline(self, x): return hv.VLine(int(x)).opts(xlim=(0, self.gdset.spec_len), ylim=(0, 1), color='red',
                                         axiswise=False, shared_axes=False)
 
-    @self.lru_wrapper
+    # update data and manage cached particles
     def _update_emb(self, p): 
-        return self.embedding[self.dset.meta['particle_inds'][p]:self.dset.meta['particle_inds'][p+1]] 
+        # Dynamically apply lru_cache using functools.partial
+        @functools.lru_cache(maxsize=len(self.dset.meta['particle_list']))
+        def cached_update(p):
+            return self.embedding[self.dset.meta['particle_inds'][p]:self.dset.meta['particle_inds'][p+1]] 
+        return cached_update(p)
         # (14400,2,96,6), (14400,2,96,969) 
     
-    def update_emb(p, e, **kwargs): 
-        emb,fits =  _update_emb(p)
+    def update_emb(self, p, e, **kwargs): 
+        emb,fits =  self._update_emb(p)
         return emb[:,e], fits[:,e] 
         # (14400,96,6), (14400,96,969) 
         
-    def update_emb_by_fit_channel(p,e,c,**kwargs):
-        emb,fits = update_emb(p,e)
+    def update_emb_by_fit_channel(self,p,e,c,**kwargs):
+        emb,fits = self.update_emb(p,e)
         return emb[:,c],fits[:,c] 
         # (14400,6), (14400,969) 
         
-        
     # update mean image/spec
-    def update_mean_image(p,e, **kwargs): 
-        title = f"Mean image {dset.meta['particle_list'][p]}"
-        return hv.Image(dset.get_mean_image(p,e), bounds=((0,0,)+dset.meta['shape_list'][p])
+    def update_mean_image(self,p,e, **kwargs): 
+        title = f"Mean image {self.dset.meta['particle_list'][p]}"
+        return hv.Image(self.dset.get_mean_image(p,e), bounds=((0,0,)+self.dset.meta['shape_list'][p])
                         ).opts(width=350, height=300, cmap='viridis', colorbar=True, tools=[], 
                                 axiswise=True, shared_axes=False, title=title)            
         
-    def update_mean_spectrum(p,e, **kwargs):
-        mean_spectrum = update_data(p,e).mean(axis=0)
+    def update_mean_spectrum(self,p,e, **kwargs):
+        mean_spectrum = self.update_data(p,e).mean(axis=0)
         return hv.Curve(mean_spectrum
                         ).opts(tools=['tap'], 
                                 axiswise=True, shared_axes=False, title='Mean Spectrum')
         
-    def visualize_input_mean(self):
-        pass
+    # def visualize_input_mean(self):
+    #     mean_image_dmap = hv.DynamicMap(pn.bind(self.update_mean_image, p=self.p_select, e=self.e_select)
+    #                             ).opts(width=350, height=300, cmap='viridis', colorbar=True, 
+    #                                     axiswise=True, shared_axes=False)
+    #     mean_spectrum_dmap = hv.DynamicMap(pn.bind(self.update_mean_spectrum, p=self.p_select, e=self.e_select)
+    #                             ).opts(axiswise=True, shared_axes=False)
+
+    #     # make sure the selectors are present
+    #     return pn.Column( pn.Row(self.p_select, self.e_select,),
+    #             mean_image_dmap+mean_spectrum_dmap).servable()
 
     # update main frames
-    def update_input_image(p,e, x, **kwargs): 
+    def update_input_image(self,p,e, x, **kwargs): 
         title = f"Frame at: {int(x)}"
-        return hv.Image( update_data(p,e)[:, int(x)].reshape(dset.meta['shape_list'][p]),
-                        bounds=((0,0,)+dset.meta['shape_list'][p])).opts(axiswise=0, title=title)
+        return hv.Image( self.update_data(p,e)[:, int(x)].reshape(self.dset.meta['shape_list'][p]),
+                        bounds=((0,0,)+self.dset.meta['shape_list'][p])).opts(axiswise=0, title=title)
     
-    def update_input_spectrum(p,e, x, y, **kwargs): 
+    def update_input_spectrum(self,p,e, x, y, **kwargs): 
         title = f"Spec at: ({int(x)},{int(y)})"
-        return hv.Curve( update_data(p,e).reshape(dset.meta['shape_list'][p]+(-1,))[int(x), int(y), :]).opts(axiswise=0, title=title)
+        return hv.Curve( self.update_data(p,e).reshape(self.dset.meta['shape_list'][p]+(-1,))[int(x), int(y), :]).opts(axiswise=0, title=title)
 
-    def visualize_input_at(self,x,y):
-        pass
+    def visualize_input_at(self):
+        mean_image_dmap = hv.DynamicMap(pn.bind(self.update_mean_image, p=self.p_select, e=self.e_select)
+                                ).opts(width=350, height=300, cmap='viridis', colorbar=True, 
+                                        axiswise=True, shared_axes=False)
+        mean_spectrum_dmap = hv.DynamicMap(pn.bind(self.update_mean_spectrum, p=self.p_select, e=self.e_select)
+                                ).opts(axiswise=True, shared_axes=False)
 
-    # functions to graph fits and particles
-    def graph_emb_fits_mean(p,e,x=0,y=0):
-        _,fits = update_emb(p,e) # (14400,96,969) 
-        orig = update_data(p,e)
-        idx = np.ravel_multi_index((int(x),int(y)),(dset.meta['shape_list'][p]))
+        # Streams to handle tap events
+        point_stream = Tap(source=self.empty, x=0, y=0) # w
+        spectrum_stream = Tap(source=mean_spectrum_dmap, x=0) # a,b
+        
+        dot_overlay = hv.DynamicMap(pn.bind(self.show_dot, p=self.p_select), streams=[point_stream]
+                                ).opts(axiswise=False, shared_axes=False)
+        vline_overlay = hv.DynamicMap(self.show_vline, streams=[spectrum_stream]
+                                            ).opts(xlim=(0, self.dset.spec_len), ylim=(0, 1), 
+                                                    axiswise=False, shared_axes=False)
+
+        # plot selected image/spectrum 
+        frame_dmap = hv.DynamicMap(pn.bind(self.update_frame, p=self.p_select, e=self.e_select), streams=[spectrum_stream]
+                                ).opts(width=350, height=300, cmap='viridis', colorbar=True, 
+                                        axiswise=True, shared_axes=False)
+        spec_dmap = hv.DynamicMap(pn.bind(self.update_spec, p=self.p_select, e=self.e_select), streams=[point_stream]
+                                ).opts(axiswise=True, shared_axes=False)
+        
+        processed_panel = pn.Column( pn.Row(self.p_select, self.e_select,),
+                            ( (mean_image_dmap*dot_overlay).opts(axiswise=True) + \
+                              (mean_spectrum_dmap*vline_overlay).opts(axiswise=True) ),
+                            ( (frame_dmap*dot_overlay).opts(axiswise=True) + \
+                              (spec_dmap*vline_overlay).opts(axiswise=True) ) )
+        return processed_panel
+
+    # functions to graph fits
+    def graph_emb_fits_mean(self,p,e,x=0,y=0):
+        _,fits = self.update_emb(p,e) # (14400,96,969) 
+        orig = self.update_data(p,e)
+        idx = np.ravel_multi_index((int(x),int(y)),(self.dset.meta['shape_list'][p]))
         fits = hv.Curve(fits[idx].sum(axis=0)).opts(axiswise=True, shared_axes=False,color='red')
-        eels = hv.Curve(orig[idx]).opts(axiswise=True, shared_axes=False, color='blue', 
-                                        tools=['tap'], title=f'Raw and fitted Spectra ({int(x)},{int(y)})')
+        eels = hv.Curve(orig[idx]).opts(axiswise=True, shared_axes=False, color='blue', tools=['tap'], 
+                                        title=f'Raw and fitted Spectra ({int(x)},{int(y)})')
         return (eels*fits)
 
-    def graph_emb_particles_mean(p,e,x=0,**kwargs):
-        _,fits = update_emb(p,e) # (14400,96,969)
-        return hv.Image(fits[:,:,int(x)].sum(1).reshape(dset.meta['shape_list'][p]), bounds=(0,0)+dset.meta['shape_list'][p]
+    def graph_emb_particles_mean(self,p,e,x=0,**kwargs):
+        _,fits = self.update_emb(p,e) # (14400,96,969)
+        return hv.Image(fits[:,:,int(x)].sum(1).reshape(self.dset.meta['shape_list'][p]), bounds=(0,0)+dset.meta['shape_list'][p]
                         ).opts(width=350, height=300, cmap='viridis', colorbar=True, tools=['tap'], 
                                 axiswise=True, shared_axes=False, title=f'Fitted Frame {int(x)}')
 
-    def graph_emb_parameters_mean(p,e,x,y,par,**kwargs):
-        emb,_ = update_emb(p,e) # (14400,96,969)
+    def graph_emb_parameters_mean(self,p,e,x,y,par,**kwargs):
+        emb,_ = self.update_emb(p,e) # (14400,96,969)
         if par==0 or par==3: mean_par = emb[:,:,par].sum(1)
         else: mean_par = emb[:,:,par].mean(1)
-        idx = np.ravel_multi_index((int(x), int(y)),dset.meta['shape_list'][p])
-        return hv.Image(mean_par.reshape(dset.meta['shape_list'][p]), bounds=(0,0)+dset.meta['shape_list'][p]
+        idx = np.ravel_multi_index((int(x), int(y)),self.dset.meta['shape_list'][p])
+        return hv.Image(mean_par.reshape(self.dset.meta['shape_list'][p]), bounds=(0,0)+self.dset.meta['shape_list'][p]
                         ).opts(colorbar=True,clim=(mean_par.min(),mean_par.max()),
-                            axiswise=True, shared_axes=False, title=f'{par_labels[par]}: {mean_par[idx]:.3e}' ) 
+                            axiswise=True, shared_axes=False, title=f'{self.parameter_labels[par]}: {mean_par[idx]:.3e}' ) 
 
-    def visualize_embedding_mean(self,view_channels='active'):
+    def visualize_embedding_mean(self,view_channels='active'): # TODO: fix the empty grid size (compatible for 120 and 140)
         '''
         {'active', 'sparse'}
         '''
-        pass
+        
+        # Streams to handle tap events
+        point_stream = Tap(source=self.blank_emb, x=0, y=0) # w
+        spectrum_stream = Tap(source=self.blank_spec, x=0) # a,b
+        
+        dot_overlay = hv.DynamicMap(pn.bind(self.show_dot, p=self.p_select), streams=[point_stream]
+                                ).opts(axiswise=False, shared_axes=False)
+        vline_overlay = hv.DynamicMap(self.show_vline, streams=[spectrum_stream]
+                                            ).opts(xlim=(0, self.dset.spec_len), ylim=(0, 1), 
+                                                    axiswise=False, shared_axes=False)
+
+        parameter_dmaps = [ self.dot_overlay*hv.DynamicMap( 
+                                    pn.bind(self.graph_emb_parameters_mean, p=self.p_select, e=self.e_select, par=par), 
+                                    streams=[point_stream]
+                                    ).opts(width=250, height=200, cmap='viridis', 
+                                    colorbar_opts={'width': 5},
+                                axiswise=False, shared_axes=False )\
+            for par in list(range(self.model1D.num_params)) ]
     
     # functions to graph fits and particles
-    def graph_emb_fits_by_fit_channel(p,e,c,x=0,y=0):
-        idx = np.ravel_multi_index((int(x),int(y)),(dset.meta['shape_list'][p]))
-        _,fits = update_emb_channel(p,e,c) # (14400,96,969) 
+    def graph_emb_fits_by_fit_channel(self,p,e,c,x=0,y=0):
+        idx = np.ravel_multi_index((int(x),int(y)),(self.dset.meta['shape_list'][p]))
+        _,fits = self.update_emb_channel(p,e,c) # (14400,96,969) 
         fits=fits[idx]
-        orig = update_data(p,e)[idx]
+        orig = self.update_data(p,e)[idx]
         # orig=orig/orig.max()*fits.max() # scaled
         fits = hv.Curve(fits).opts(axiswise=True, shared_axes=False,color='red')
         eels = hv.Curve(orig).opts(axiswise=True, shared_axes=False, color='blue', 
                                         tools=['tap'], title=f'Raw and fitted Spectra ({int(x)},{int(y)})')
         return (eels*fits)
 
-    def graph_embed_particles_by_fit_channel(p,e,c,x=0,**kwargs):
-        _,fits = update_emb_channel(p,e,c) # (14400,96,969)
-        return hv.Image(fits[:,int(x)].reshape(dset.meta['shape_list'][p]), bounds=(0,0)+dset.meta['shape_list'][p]
+    def graph_emb_particles_by_fit_channel(self,p,e,c,x=0,**kwargs):
+        _,fits = self.update_emb_channel(p,e,c) # (14400,96,969)
+        return hv.Image(fits[:,int(x)].reshape(self.dset.meta['shape_list'][p]), 
+                        bounds=(0,0)+self.dset.meta['shape_list'][p]
                         ).opts(width=350, height=300, cmap='viridis', colorbar=True, tools=['tap'], 
                                 axiswise=True, shared_axes=False, title=f'Fitted Frame {int(x)}, Channel {c}')
                         
     def graph_emb_parameters_by_fit_channel(self,p,e,c,x,y,par,**kwargs):
-        idx = np.ravel_multi_index((int(x), int(y)),dset.meta['shape_list'][p])
-        emb,_ = update_emb_channel(p,e,c) # (14400,969)
+        idx = np.ravel_multi_index((int(x), int(y)),self.dset.meta['shape_list'][p])
+        emb,_ = self.update_emb_channel(p,e,c) # (14400,969)
         emb = emb[:,par]
         # mean_par = emb[:,:,par].mean(1)
-        return hv.Image(emb.reshape(dset.meta['shape_list'][p]), bounds=(0,0)+dset.meta['shape_list'][p]
+        return hv.Image(emb.reshape(self.dset.meta['shape_list'][p]), bounds=(0,0)+self.dset.meta['shape_list'][p]
                         ).opts(colorbar=True,clim=(emb.min(),emb.max()),
-                            axiswise=True, shared_axes=False, title=f'{pars[par]}: {emb[idx]:.3e}' ) 
+                            axiswise=True, shared_axes=False, title=f'{self.pars[par]}: {emb[idx]:.3e}' ) 
     
     def visualize_embedding_by_channel(self,view_channels='active'):
         '''
         {'active', 'sparse'}
         '''
-        pass
-             
+        # Plot image/spectrum
+        emb_dmap = hv.DynamicMap(pn.bind(self.graph_emb_particles_by_fit_channel, 
+                                         p=self.p_select, e=self.e_select, c=self.c_select), 
+                                 streams=[self.spectrum_stream]
+                                ).opts(width=350, height=300, cmap='viridis', colorbar=True, colorbar_opts={'width': 10},
+                                        axiswise=False, shared_axes=False, tools=['tap'])
+        fits_dmap = hv.DynamicMap(pn.bind(self.graph_emb_fits_by_fit_channel, 
+                                          p=self.p_select, e=self.e_select, c=self.c_select), 
+                                  streams=[self.point_stream]
+                                ).opts(axiswise=False, shared_axes=False, tools=['tap'])
+        parameter_dmaps = [ self.dot_overlay*hv.DynamicMap( pn.bind(self.graph_emb_parameters_by_fit_channel, 
+                                                                    p=self.p_select, e=self.e_select, c=self.c_select, par=par), 
+                                              streams=[self.point_stream]
+                                            ).opts(width=250, height=200, cmap='viridis', 
+                                            colorbar_opts={'width': 5},
+                                axiswise=False, shared_axes=False )\
+            for par in list(range(self.model1D.num_params)) ]
+        parameter_dmaps_by_channel = pn.Column( pn.Row(self.p_select, self.e_select, self.c_select),
+                (self.blank_emb*self.emb_dmap*self.dot_overlay).opts(axiswise=True) +\
+                (self.blank_spec*fits_dmap*self.vline_overlay).opts(axiswise=True),
+                hv.Layout( [self.dot_overlay*dmap for dmap in parameter_dmaps] ).cols(3) )
+
+        return parameter_dmaps_by_channel
+     
 def imshow_tensor(x):
     import matplotlib.pyplot as plt
     plt.imshow(x.detach().cpu().numpy());
