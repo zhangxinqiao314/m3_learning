@@ -81,15 +81,22 @@ class DivergenceLoss(nn.Module):
 
 
 class Weighted_LN_loss(nn.Module):
-    def __init__(self, ln_parm=2, coef=0.01, channels=1):
+    def __init__(self, ln_parm=2, coef=0.01, channels=1, ):
+        """_summary_
+
+        Args:
+            ln_parm (int, optional): _description_. Defaults to 2.
+            coef (float, optional): _description_. Defaults to 0.01.
+            channels (int, optional): _description_. Defaults to 1.
+        """        
         super(Weighted_LN_loss, self).__init__()        
         self.ln_parm = ln_parm
         self.coef = coef
         self.channels = channels
         
     def forward(self,x):
-        loss = (x**self.ln_parm).sum(dim=0)**(1/self.ln_parm)
         loss = loss * torch.linspace(0,1,self.channels).to(x.device) # penalize each channel using a different coefficient
+        loss = (x**self.ln_parm).sum(dim=1)**(1/self.ln_parm)
         return loss.mean()*self.coef
 
 class Sparse_Max_Loss(nn.Module): #TODO: break into channel-scaled coef loss and sparse max loss
@@ -104,21 +111,11 @@ class Sparse_Max_Loss(nn.Module): #TODO: break into channel-scaled coef loss and
         self.coef = coef
         self.ln_parm=2
         self.threshold = min_threshold
-        
+        self.channels=channels
     def forward(self,x):
         ''' x (tensor): shape (batchsize, n). n is the number of channels '''
         # 1 
-        loss = torch.norm(x, self.ln_parm, dim=0).to(x.device) /x.shape[0] # take batchnorm. retain fit channels
-        loss = F.threshold(loss, self.threshold, 0) # set nonactive channels to 0
-        mask = torch.argwhere(loss>0) # exclude nonactive channels from normalization
-        return self.coef *(1-loss[mask]).sum()/len(mask)
-    
-        # 2
-        loss = 1 - torch.norm(x, self.ln_parm, dim=0).to(x.device) /x.shape[0] # take batchnorm. retain fit channels
-        mask = torch.argwhere(loss>(1-self.threshold)) # threshold 
-        loss = torch.linspace(0,1,self.channels).to(x.device) *(1-loss)# penalize each channel using a different coefficient
-        self.coef .sum() /non_0 
-        loss = F.threshold(loss, self.threshold, 0) # set nonactive channels to 0
-        non_0 = len( torch.argwhere(loss>0) ) # divide loss by this to exclude nonactive channels from normalization
-    
-    
+        # loss = torch.norm(x, self.ln_parm, dim=0).to(x.device) /x.shape[0] # take batchnorm. retain fit channels
+        mask = torch.argwhere(x>self.threshold) # threshold
+        loss = torch.norm(1-x[mask].sum(dim=1)/self.channels)/x.shape[1]
+        return self.coef * loss.mean()

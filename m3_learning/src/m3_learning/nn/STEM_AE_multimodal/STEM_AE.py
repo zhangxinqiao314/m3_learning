@@ -1245,6 +1245,7 @@ class FitterAutoencoder_1D():
               coef_2=0,
               coef_3=0,
               coef_4=0,
+              coef_5=0,
               seed=12,
               epochs=100,
               with_scheduler=True,
@@ -1308,8 +1309,7 @@ class FitterAutoencoder_1D():
 
         if self.wandb_project is not None:  
             wandb_init['project'] = self.wandb_project
-            wandb.init(**wandb_init)
-            config={} )# figure out config later
+            wandb.init(**wandb_init) # figure out config later
             
         # training loop
         for epoch in range(self.start_epoch, N_EPOCHS):
@@ -1378,6 +1378,7 @@ class FitterAutoencoder_1D():
                       coef2=0,
                       coef3=0,
                       coef4=0,
+                      coef5=0,
                       ln_parm=1,
                       beta=None,
                       fill_embeddings=False,
@@ -1405,8 +1406,9 @@ class FitterAutoencoder_1D():
                      'mse_loss': 0,
                      'train_loss': 0,
                      'sparse_max_loss': 0,
+                     'l2_batchwise_loss': 0,
                      }
-        ln_ = Weighted_LN_loss(coef=coef1,channels=self.num_fits).to(self.device)
+        weighted_ln_ = Weighted_LN_loss(coef=coef1,channels=self.num_fits).to(self.device)
         con_l = ContrastiveLoss(coef2).to(self.device)
         maxi_ = DivergenceLoss(train_iterator.batch_size, coef3).to(self.device)
         sparse_max = Sparse_Max_Loss(min_threshold=self.learning_rate,
@@ -1425,7 +1427,7 @@ class FitterAutoencoder_1D():
             else: embedding, sd, mn, predicted_x = self.Fitter(x)
 
             if coef1 > 0: 
-                reg_loss_1 = ln_(embedding[:,:,0])
+                reg_loss_1 = weighted_ln_(embedding[:,:,0])
                 loss_dict['weighted_ln_loss']+=reg_loss_1
             else: reg_loss_1 = 0
 
@@ -1443,7 +1445,21 @@ class FitterAutoencoder_1D():
                 sparse_max_loss = sparse_max(embedding[:,:,0])
                 loss_dict['sparse_max_loss']+=sparse_max_loss
             else: sparse_max_loss = 0
-            # reconstruction loss
+            
+            if coef5 > 0: 
+                # l2 loss across batchwise std of x 
+                # (each fit channel has different x, but small variation across batch)
+                # mask 0s?a
+                
+                # l2_loss = coef5*torch.norm(embedding[:,:,1],axis=0).mean()
+                
+                l2_loss = coef5*( (embedding[:,:,1]/embedding[:,:,2]).max(dim=0).values - \
+                                  (embedding[:,:,1]/embedding[:,:,2]).min(dim=0).values ).mean()
+                loss_dict['l2_batchwise_loss'] += l2_loss
+                
+            else: l2_loss = 0
+            
+            # reconstruction loss TODO: try getting rid of this
             mask = (x!=0) # only compare with non0 eels. Otherwise, too noisy and biased
             loss = F.mse_loss(x, predicted_x, reduction='mean');
             loss = (loss*mask.float()).sum()
@@ -1451,7 +1467,7 @@ class FitterAutoencoder_1D():
 
             loss_dict['mse_loss'] += loss.item()
             
-            loss = loss + reg_loss_1 + contras_loss - maxi_loss
+            loss = loss + reg_loss_1 + contras_loss - maxi_loss + l2_loss
             loss_dict['train_loss'] += loss.item()
 
             # backward pass
@@ -3100,8 +3116,8 @@ def generate_pseudovoigt_1D(embedding, dset, limits=[1,1,975,975], device='cpu',
        
        shape should be (_, num_fits, x_, y_)
     '''
-        
-    A = limits[0] * nn.ReLU()(embedding[..., 0]) # area under curve
+    # TODO: try to have all values in embedding between 0-1
+    A = limits[0] * nn.ReLU()(embedding[..., 0]) # area under curve TODO: best way to scale this?
     # Ib = limits[1] * nn.ReLU()(embedding[..., 1])
     x = torch.clamp(limits[1]/2 * nn.Tanh()(embedding[..., 1]) + limits[1]/2, min=1e-3) # mean
     w = torch.clamp(limits[2]/2 * nn.Tanh()(embedding[..., 2]) + limits[2]/2, min=1e-3) # fwhm
