@@ -79,7 +79,6 @@ class DivergenceLoss(nn.Module):
 
         return loss
 
-
 class HigherOrderLoss(nn.Module):
     def __init__(self, order=2):
         super(HigherOrderLoss, self).__init__()
@@ -89,10 +88,10 @@ class HigherOrderLoss(nn.Module):
         return torch.sum((x1-x2)**self.order)**(1/self.order)
         
 class LN_loss(nn.Module):
-    def __init__(self, order, ln_parm):
+    def __init__(self, coef, order,):
         super(LN_loss, self).__init__()
         self.order = order
-        self.coef = ln_parm
+        self.coef = coef
         
     def forward(self,x):
         return self.coef*(x**self.order)**(1/self.order)

@@ -67,7 +67,7 @@ def generate_pseudovoigt_1D(embedding, dset, limits=[1,975,25,1,25,1], device='c
     return pseudovoigt.to(torch.float32)
 
 
-def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 1, 10, 10, 10, 10, 0.5], device='cpu', return_params=False):
+def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 10, 10, 10, 10, 0.5], device='cpu', return_params=False):
     '''embedding is: 
         A: Area under curve
         I_b: baseline intensity
@@ -81,23 +81,22 @@ def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 1, 10, 10, 10, 10, 
        shape should be (_, num_fits, x_, y_)'''
     
     A = limits[0] * nn.ReLU()(embedding[..., 0])
-    Ib = limits[1] * nn.ReLU()(embedding[..., 1])
-    x = torch.clamp(limits[2]/2 * nn.Tanh()(embedding[..., 2]) + limits[2]/2, min=1e-3)
-    y = torch.clamp(limits[3]/2 * nn.Tanh()(embedding[..., 3]) + limits[3]/2, min=1e-3)
-    wx = torch.clamp(limits[4]/2 * nn.Tanh()(embedding[..., 4]) + limits[4]/2, min=1e-3)
-    wy = torch.clamp(limits[5]/2 * nn.Tanh()(embedding[..., 5]) + limits[5]/2, min=1e-3)
-    nu = 0.5 * nn.Tanh()(embedding[..., 6]) + 0.5
-    t = torch.pi / 2 * nn.Tanh()(embedding[..., 7])
+    x = torch.clamp(limits[1]/2 * nn.Tanh()(embedding[..., 1]) + limits[1]/2, min=1e-3)
+    y = torch.clamp(limits[2]/2 * nn.Tanh()(embedding[..., 2]) + limits[2]/2, min=1e-3)
+    wx = torch.clamp(limits[3]/2 * nn.Tanh()(embedding[..., 3]) + limits[3]/2, min=1e-3)
+    wy = torch.clamp(limits[4]/2 * nn.Tanh()(embedding[..., 4]) + limits[4]/2, min=1e-3)
+    nu = 0.5 * nn.Tanh()(embedding[..., 5]) + 0.5
+    t = torch.pi / 2 * nn.Tanh()(embedding[..., 6])
 
     s = x.shape  # (_, num_fits)
-    
+
     # Generate grid
     x_ = torch.arange(out_shape[0], dtype=torch.float32)
     y_ = torch.arange(out_shape[1], dtype=torch.float32)
     x_, y_ = torch.meshgrid(x_, y_)
     x_ = x_.repeat(s[0], s[1], 1, 1).to(device) 
     y_ = y_.repeat(s[0], s[1], 1, 1).to(device)
-    
+
     # Apply rotation
     cos_t = torch.cos(t).unsqueeze(-1).unsqueeze(-1)
     sin_t = torch.sin(t).unsqueeze(-1).unsqueeze(-1)
@@ -117,13 +116,8 @@ def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 1, 10, 10, 10, 10, 
     # Combine Gaussian and Lorentzian components
     pseudovoigt = nu.unsqueeze(-1).unsqueeze(-1) * lorentzian + (1 - nu.unsqueeze(-1).unsqueeze(-1)) * gaussian
 
-    # Add baseline intensity
-    pseudovoigt += Ib.unsqueeze(-1).unsqueeze(-1)
-
     if not return_params:
         return pseudovoigt.to(torch.float32)
-    
-    params = torch.stack([A, Ib, x, y, wx, wy, t, nu], dim=2)
+
+    params = torch.stack([A, x, y, wx, wy, t, nu], dim=2)
     return pseudovoigt.to(torch.float32), params.to(torch.float32)
-    
-    
