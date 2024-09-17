@@ -95,8 +95,10 @@ class Weighted_LN_loss(nn.Module):
         self.channels = channels
         
     def forward(self,x):
-        loss = loss * torch.linspace(0,1,self.channels).to(x.device) # penalize each channel using a different coefficient
-        loss = (x**self.ln_parm).sum(dim=1)**(1/self.ln_parm)
+        weights = torch.linspace(0,1,self.channels).to(x.device) # penalize each channel using a different coefficient
+        loss = x*weights.unsqueeze(0)
+        loss = torch.norm(loss, self.ln_parm, dim=1).mean()
+        # loss = (x**self.ln_parm).sum(dim=1)**(1/self.ln_parm)
         return loss.mean()*self.coef
 
 class Sparse_Max_Loss(nn.Module): #TODO: break into channel-scaled coef loss and sparse max loss
