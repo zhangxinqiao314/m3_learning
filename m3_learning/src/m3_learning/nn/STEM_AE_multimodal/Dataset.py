@@ -208,26 +208,79 @@ class STEM_Dataset(Dataset):
 
 
 class STEM_EELS_Dataset(Dataset):
-    """Class for the STEM dataset.
+    """Class for the STEM dataset. Takes in raw data save in form: '{save_path}/{exp}*/...') where exp is the group of folders containing the diffraction and eels data.
+        ex:
+            eels low loss data is in f'{save_path}/TRI*/eels*/EELS LL SI.dm4'
+            eels high loss data is in f'{save_path}/TRI*/eels*/EELS HL SI.dm4'
+    
+    Args:
+        save_path (string): Path where the hyperspy file is located.
+        mode (string): Tells you how to return the data. Given as [{'processed','kernel_sum'}, {'eels', 'diff', 'both'}]
+            mode[0]: Where and how to save processed data
+                'processed': Diffraction data is processed with log scaling, standard scaling, and min max scaling. EELS spectrum is cropped down to the region of interest and processed with standard scaling and min-max scaling.
+                'kernel_sum': same as processed, but the data is summed over a 2D kernel of size kernel_size.
+            mode[1]: What getitem returns
+                'eels': __getitem__ returns only the EELS data.
+                'diff': __getitem__ returns only the diffraction data.
+                'both': __getitem__ returns both the EELS and diffraction data.
+        kernel_size (int, optional): Size of the kernel used to write kernel_sum. Defaults to 8.
+        EELS_roi (dict, optional): EELS region of interest. Separated by Low Loss (LL) and High Loss (HL) regions. Entries are lists of tuples, which are indices of regions of interest. Defaults to {'LL':[(0,-1)], 'HL': [(0,-1)]}.
+        overwrite_eels (bool, optional): Whether to overwrite the exisitng EELS data. Defaults to False.
+        overwrite_diff (bool, optional): Whether to overwrite the existing diffraction data. Defaults to False.
+        **kwargs: Additional keyword arguments.
+    
+    Attributes:
+        save_path (string): Path where the hyperspy file is located.
+        mode (list): List containing the mode of data return.
+        h5_name (string): Name of the h5 file.
+        meta (dict): Dictionary containing metadata.
+        data_list (list): List containing the data.
+        bad_files (list): List of bad files.
+        particle_count (int): Number of particles.
+        eels_chs (int): Number of EELS channels.
+        spec_len (int): Length of the spectral axis.
+        raw_x_labels (numpy.ndarray): Array containing the raw spectral axis labels.
+        ll_i0 (int): Index of the low loss axis.
+        shape (tuple): Tuple containing the shape of the dataset.
+    
+    Methods:
+        get_raw_spectral_axis(ind=0, inds=[(0,-1,0), (0,-1,1)]): Get the raw spectral axis.
+        __len__(): Get the length of the dataset.
+        write_means(overwrite_eels=False, overwrite_diff=False): Write mean data.
+        get_mean_image(p, e): Get the mean image.
+        get_mean_spectrum(p, e): Get the mean spectrum.
+        write_processed(overwrite_eels=False, overwrite_diff=False): Write processed data.
+        write_kernel_sum(ksize, overwrite_eels=False, overwrite_diff=False): Write kernel sum data.
     """
-    def __init__(self,save_path,mode,kernel_size=8,
-                 EELS_roi={'LL':[], 'HL': []},
+    def __init__(self,save_path,exp,mode,kernel_size=8,
+                 EELS_roi={'LL':[(0,-1)], 'HL': [(0,-1)]},
                  overwrite_eels=False,
                  overwrite_diff=False,
                  **kwargs):
         """Initialization of the class.
-
+    
         Args:
-            mode (string): tells you how to return the data. Given as [{'processed','kernel_sum'}, {'eels', 'diff', 'both'}]
-            save_path (string): path where the hyperspy file is located
-            EELS_roi (dict): EELS region of interest. Separated by LL and HL. 
-                Entries are lists of tuples, which are indices of regions of interest.
-                Default {'LL':[], 'HL': []}.
-            overwrite (bool): whether the delete and rewrite h5v file. Default False.
+            save_path (string): Path where the hyperspy file is located.
+            exp (string): Group of folders containing the diffraction and eels data.
+            mode (string): Tells you how to return the data. Given as [{'processed','kernel_sum'}, {'eels', 'diff', 'both'}]
+                mode[0]: Where and how to save processed data
+                    'processed': Diffraction data is processed with log scaling, standard scaling, and min max scaling. EELS spectrum is cropped down to the region of interest and processed with standard scaling and min-max scaling.
+                    'kernel_sum': same as processed, but the data is summed over a 2D kernel of size kernel_size.
+                mode[1]: What getitem returns
+                    'eels': __getitem__ returns only the EELS data.
+                    'diff': __getitem__ returns only the diffraction data.
+                    'both': __getitem__ returns both the EELS and diffraction data.
+            kernel_size (int, optional): Size of the kernel used to write kernel_sum. Defaults to 8.
+            EELS_roi (dict, optional): EELS region of interest. Separated by Low Loss (LL) and High Loss (HL) regions. Entries are lists of tuples, which are indices of regions of interest. Defaults to {'LL':[(0,-1)], 'HL': [(0,-1)]}.
+            overwrite_eels (bool, optional): Whether to overwrite the exisitng EELS data. Defaults to False.
+            overwrite_diff (bool, optional): Whether to overwrite the existing diffraction data. Defaults to False.
+            **kwargs: Additional keyword arguments.
         """
     
         # assert the EELS_roi is alright
-        assert len(EELS_roi['LL']+EELS_roi['HL'])>0, 'Set regions of interest for EELS'
+        assert len(EELS_roi['LL']+EELS_roi['HL'])>0, 'Set regions of interest for EELS in kwarg EELS_roi'
+        
+        # set mode (location where data is saved)
         if mode[0]=='kernel_sum': self.mode = [mode[0]+f'_{kernel_size}', mode[1]]
         else: self.mode=mode #TODO: make setter; have the setter adjust the scalers when the mode changes.
         
@@ -237,9 +290,9 @@ class STEM_EELS_Dataset(Dataset):
         # create and sort metadata 
         print('fetching metadata...')
         self.meta = {}
-        stem_path_list = glob.glob(f'{save_path}/TRI*/diff*/Diffraction SI.dm4')
-        eels_ll_list = glob.glob(f'{save_path}/TRI*/eels*/EELS LL SI.dm4')
-        eels_hl_list = glob.glob(f'{save_path}/TRI*/eels*/EELS HL SI.dm4')
+        stem_path_list = glob.glob(f'{save_path}/{exp}*/diff*/Diffraction SI.dm4')
+        eels_ll_list = glob.glob(f'{save_path}/{exp}*/eels*/EELS LL SI.dm4')
+        eels_hl_list = glob.glob(f'{save_path}/{exp}*/eels*/EELS HL SI.dm4')
         
         #functions for sorting
         def get_number(path): return int(path.split('/')[-2].split('-')[1])
@@ -740,6 +793,7 @@ class EELS_Embedding_Dataset():
         self.h5_name = f'{self.model.folder}/{self.model.emb_h5}'
         self.embs = None
         self.fits =  None
+        self.shape = ((self.__len__(),)+self[0][0].shape)
     
     def __len__(self):
         return len(self.dset)
@@ -752,17 +806,15 @@ class EELS_Embedding_Dataset():
         plt.plot(fits[e].sum(axis=0),linewidth=1)
         plt.show()
 
-    def get_threshold_channels(self, active_limit=.20, sparse_limit=.2):
+    def get_active_channels(self,thresh=0.1):
         '''fraction of the max. threshold for "active" channels
         fraction of the max of channel. threshold for sparse channels
         '''
         with self.open_h5() as h:
-            emb = h[f'fits_{self.model.check}']
-            data = emb[::30].sum(axis=(0,1,3))
-            max_ = data.max()
-            active = np.argwhere(data>max_*active_limit)
-            sparse = np.argwhere((data<=max_*active_limit) * (data>max_*sparse_limit))
-        return active.flatten(), sparse.flatten()
+            emb = h[f'embedding_{self.model.check}']
+            data = da.from_array( emb[...,0])
+            indices = da.argwhere(data.mean((0,1)) > thresh)
+            return indices.compute().flatten()
 
     def open_h5(self):
         # with h5py.File(self.embedding_path,'r+') as h:

@@ -1124,7 +1124,7 @@ class FitterAutoencoder_1D():
         
     def __init__(self,function, dset, input_channels, num_params, num_fits, limits=[1,975,25,1,25,1], scaler=None, 
                  post_processing=None, device="cuda", 
-                 loops_scaler=None, flatten_from=1, 
+                 loops_scaler=None,
                  x1_ch_list=[8,6,4], x1_pool=64, 
                  x2_pool_list=[16,8,4], x2_ch_list=[8,16],
                  dense_list=[24,16,8],
@@ -1136,17 +1136,26 @@ class FitterAutoencoder_1D():
         """_summary_
 
         Args:
-            function (_type_): _description_
-            x_data (_type_): _description_
-            input_channels (_type_): number of channels in orig data. ex. 2 channels: high loss, low loss
-            num_params (_type_): number of parameters needed to generate the fit
-            num_fits (_type_): the number of peaks to include
-            limits (list): values of [A_g, x, sigma, A_l, gamma, nu]. Defaults to: [1,975,25,1,25,1]
-            scaler (_type_, optional): _description_. Defaults to None.
-            post_processing (_type_, optional): _description_. Defaults to None.
-            device (str, optional): _description_. Defaults to "cuda".
-            loops_scaler (_type_, optional): _description_. Defaults to None.
-            flatten_from (int, optional): _description_. Defaults to 1.
+            function (type): fitter function used to fit embedding parameters.
+            dset (type): The dataset.
+            input_channels (type): The number of channels in the original data.
+            num_params (type): The number of parameters needed to generate the fit.
+            num_fits (type): The number of peaks to include.
+            limits (list, optional): The limits on the fit paramters used during regularization. Defaults to [1,975,25,1,25,1].
+            scaler (type, optional): The scaler. Defaults to None.
+            post_processing (type, optional): The post-processing. Defaults to None.
+            device (str, optional): The device. Defaults to "cuda".
+            loops_scaler (type, optional): The loops scaler. Defaults to None.
+            flatten_from (int, optional): The flatten from value. Defaults to 1.
+            x1_ch_list (list, optional): The x1 channel list. Defaults to [8,6,4].
+            x1_pool (int, optional): The x1 pool value. Defaults to 64.
+            x2_pool_list (list, optional): The x2 pool list. Defaults to [16,8,4].
+            x2_ch_list (list, optional): The x2 channel list. Defaults to [8,16].
+            dense_list (list, optional): The dense list. Defaults to [24,16,8].
+            learning_rate (float, optional): The learning rate. Defaults to 3e-5.
+            emb_h5 (str, optional): The path to the h5 file where the embedding and fits is saved. Defaults to './embeddings_1D.h5'.
+            folder (str, optional): The folder. Defaults to './save_folder'.
+            wandb_project (type, optional): The name of the wandb project to log training results. Defaults to None, and no training is logged. You must create a mandb account and sign in on jupyter notebook to use this feature.
         """        
 
         self.input_channels = input_channels
@@ -1159,7 +1168,6 @@ class FitterAutoencoder_1D():
         self.num_fits = num_fits
         self.limits = limits
         self.loops_scaler = loops_scaler
-        self.flat_dim = flatten_from
         self.learning_rate = learning_rate
 
         self._checkpoint = None
@@ -1321,7 +1329,7 @@ class FitterAutoencoder_1D():
 
 
             loss_dict = self.loss_function(
-                self.DataLoader_, coef_1, coef_2, coef_3, coef_4, coef_5, ln_parm,
+                self.DataLoader_, coef_1, coef_2, coef_3, coef_4, coef_5,ln_parm,
                 fill_embeddings=fill_embeddings, minibatch_logging_rate=minibatch_logging_rate)
             # divide by batches inplace
             loss_dict.update( (k,v/len(self.DataLoader_)) for k,v in loss_dict.items())
@@ -1492,9 +1500,16 @@ class FitterAutoencoder_1D():
         self.Fitter.load_state_dict(checkpoint['Fitter'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.start_epoch = checkpoint['epoch']
+        
+        try: self.loss_dict = checkpoint['loss_dict']
+        except: self.loss_dict = None
+        
+        try: self.loss_params = checkpoint['loss_params']
+        except: self.loss_params = None
+        
         try:
             with self.open_embedding_h() as h:
-                print('Generated available')
+                print('embedding available')
         except Exception as error:
             print(error)
             print('Embeddings not opened')
@@ -3100,7 +3115,8 @@ def get_lorentzian_parameters_1D(embedding,limits,kernel_size,amp_activation=nn.
     return amplitude,gamma_x, eta # look at limits after activations
 
 def generate_pseudovoigt_1D(embedding, dset, limits=[1,1,975,975], device='cpu',return_params=False):
-    '''https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9330705/embedding is: 
+    '''https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9330705/
+        embedding is: 
         A: Area under curve
         I_b: baseline intensity
         x: mean x of the distributions
