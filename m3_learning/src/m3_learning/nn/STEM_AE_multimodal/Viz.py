@@ -1,4 +1,6 @@
+from cProfile import label
 from turtle import color
+from urllib import response
 from m3_learning.util.file_IO import make_folder
 from m3_learning.viz.layout import layout_fig
 import numpy as np
@@ -1001,7 +1003,22 @@ class Viz_EELS_hv():
         # return emb[:,c],fits[:,c] 
         # (14400,6), (14400,969) 
     
+    def Re_e_Im_e_(self,p,e,c,x,y):
+        idx = np.ravel_multi_index((int(x), int(y)),self.dset.meta['shape_list'][p])
+        emb,fits = self.emb_channel(p,e,c)
+        fits = fits[idx]
+        # Define the frequency (omega) range for which you want to compute epsilon_1
+        x_ = np.arange(fits.shape[-1])
+        # Define the integrand for the Kramers-Kronig relation
+        integrand = []
+        for x in x_: 
+            x_new = x_
+            x_new[x]=0  # avoid pole
+            integrand.append(2/np.pi * np.trapz(fits* x /(x_new**2 - x**2))) # (fits are the eps 2 values)
+        return np.array(integrand),fits
     
+    
+         
     # Image objects #########################################
     # @profile  
     def mean_image(self,p,e, **kwargs): 
@@ -1082,8 +1099,40 @@ class Viz_EELS_hv():
                                title=f'Raw and fitted Spectra ({int(x)},{int(y)})')
 
         return fits
-     
-     
+    
+    def dielectric_spectrum(self,p,e,c,x,y):
+        Re,Im = self.Re_e_Im_e_(p,e,c,x,y)
+        eps_1 = Re/(Re**2+Im**2)
+        eps_2 = Im/(Re**2+Im**2)
+        epsilon_1 = hv.Curve(eps_1
+                ).opts(axiswise=True, shared_axes=False, 
+                        xlabel='Loss (eV)', ylabel='Intensity',
+                        xticks=self.xticks[e][::240],
+                        color='black', line_dash='solid',
+                         
+                        title=f'Dielectric Response ({int(x)},{int(y)})')
+        epsilon_2 = hv.Curve(eps_2
+                ).opts(axiswise=True, shared_axes=False, 
+                        xlabel='Loss (eV)', ylabel='Intensity',
+                        xticks=self.xticks[e][::240],
+                        color='orange', line_dash='solid',
+                        
+                        )
+        Re = hv.Curve(Re
+                ).opts(axiswise=True, shared_axes=False, 
+                        xlabel='Loss (eV)', ylabel='Intensity',
+                        xticks=self.xticks[e][::240],
+                        color='orange', line_dash='solid',
+                        )
+        Im = hv.Curve(Im
+                ).opts(axiswise=True, shared_axes=False, 
+                        xlabel='Loss (eV)', ylabel='Intensity',
+                        xticks=self.xticks[e][::240],
+                        color='Black', line_dash='solid',
+                        )
+
+        return epsilon_1*epsilon_2 + Re*Im
+
     # Parameter objects #####################################
     # @profile 
     def mean_emb_parameters(self,p,e,x,y,par,**kwargs):
@@ -1166,6 +1215,16 @@ class Viz_EELS_hv():
                                    width=350, height=300, 
                                    tools=['tap'])
         
+    def dielectric_dmap(self):
+        return hv.DynamicMap(pn.bind(self.dielectric_spectrum, 
+                                     p=self.p_select, e=self.e_select, c=self.c_select), 
+                             streams=[self.point_stream]
+                            ).opts(
+                                   axiswise=True, shared_axes=False, 
+                                   width=350, height=300,
+                                #     legend_position='top_left'
+                                   )
+    
     
     # Parameter dmaps #######################################
     # @profile 
@@ -1183,6 +1242,8 @@ class Viz_EELS_hv():
                             ).opts(width=250, height=225, cmap='viridis', colorbar_opts={'width': 5},
                                 axiswise=True, shared_axes=False )
        
+    
+    
     
     # Servables #############################################
     # @profile          
@@ -1241,8 +1302,24 @@ class Viz_EELS_hv():
 
         return parameter_dmaps_by_channel
      
-     
-     
+    def visualize_dielectric(self):
+        input_dmap = (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True)
+        emb_dmap = (self.emb_dmap() *self.blank_img *self.dot_overlay).opts(axiswise=True)
+        # e1e2,ReIm = list(self.dielectric_dmap().layout())
+        # dielectric_dmap = (e1e2*self.blank_spec *self.vline_overlay).opts(axiswise=True,)
+        # response_dmap = (ReIm*self.blank_spec *self.vline_overlay).opts(axiswise=True,)
+        dielectric_dmaps = self.dielectric_dmap()
+        
+        dielectric_dmaps_by_channel = pn.Column( 
+            pn.Row(self.p_select, self.e_select, self.c_select),
+                
+            (input_dmap + emb_dmap ),
+            
+            # (dielectric_dmap + response_dmap)
+            dielectric_dmaps
+        )
+        return dielectric_dmaps_by_channel
+        
 def imshow_tensor(x):
     import matplotlib.pyplot as plt
     plt.imshow(x.detach().cpu().numpy());

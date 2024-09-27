@@ -1765,6 +1765,7 @@ class FitterAutoencoder_1D():
     
     #TODO: make a save checkpoint function
 
+
 class ConvAutoencoder_Multimodal():
     """builds the convolutional autoencoder
     """# TODO: decorator and setters for self.autoencoder.*stuff*
@@ -2508,6 +2509,7 @@ class ConvAutoencoder_Multimodal():
         predicted_1D = predicted_1D.cpu().detach().numpy()
         predicted_2D = predicted_2D.cpu().detach().numpy()
         return predicted_1D,predicted_2D
+
 
 class Multiscale1DFitter(nn.Module):
     def __init__(self, function, x_data, input_channels, num_params, num_fits, limits=[1,975,25,1,25,1], scaler=None, 

@@ -1,3 +1,7 @@
+from random import choice
+from tabnanny import check
+from turtle import shape
+from unittest import result
 import numpy as np
 import hyperspy.api as hs
 import h5py
@@ -22,7 +26,6 @@ import time
 from skimage.morphology import binary_dilation, binary_erosion,disk
 from pdb import set_trace as bp
 import matplotlib.pyplot as plt
-
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -93,27 +96,27 @@ class STEM_Dataset(Dataset):
         self.shape = self.__len__(),128,128
 
         # create h5 dataset, fill metadata, and transfer data from dm4 files to h5
-        if overwrite or 'processed_data' not in h:
-            if 'processed_data' in h: del h['processed_data']
-            print('writing processed_data h5 dataset')
-            h.create_dataset('processed_data',
+        if overwrite or 'processed' not in h:
+            if 'processed' in h: del h['processed']
+            print('writing processed h5 dataset')
+            h.create_dataset('processed',
                               shape=(sum( [shp[0]*shp[1] for shp in self.meta['shape_list']] ),
                                     128, 128),
                               dtype=float)
             
             for k,v in self.meta.items(): # write metadata
-                    h['processed_data'].attrs[k] = v
+                    h['processed'].attrs[k] = v
 
             for i,data in enumerate(tqdm(self.data_list)): # fill data
-                h['processed_data'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
+                h['processed'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1]] = \
                     np.log(np.array(data.reshape((-1, 128,128))) + 1)    
                     # da.log(data.reshape((-1, 128,128)) + 1) 
 
         # scaling
         print("fitting scaler...")
-        # sample = h['processed_data'][np.arange(0,self.__len__(),10000)]
+        # sample = h['processed'][np.arange(0,self.__len__(),10000)]
         self.scaler = StandardScaler()
-        self.scaler.fit( h['processed_data'][0:self.__len__():5000].reshape(-1,128*128) )
+        self.scaler.fit( h['processed'][0:self.__len__():5000].reshape(-1,128*128) )
 
         print('finding brightfield indices')
         # figure out mask
@@ -121,7 +124,7 @@ class STEM_Dataset(Dataset):
         for i in tqdm(range(len(self.data_list))):
             start = self.meta['particle_inds'][i]
             stop = self.meta['particle_inds'][i+1]
-            img = h['processed_data'][start:stop:20].mean(0)
+            img = h['processed'][start:stop:20].mean(0)
             thresh = img.mean()+img.std()*7
             self.BF_inds.append(np.argwhere(img>thresh).T)
 
@@ -132,7 +135,7 @@ class STEM_Dataset(Dataset):
     
     def __getitem__(self,index): ## TODO: fix bf masking
         with h5py.File(self.h5_name, 'r+') as h5:
-            img = h5['processed_data'][index]
+            img = h5['processed'][index]
             img = img.reshape(-1,128*128)
             img = self.scaler.transform(img)
             img = img.reshape(128,128)
@@ -153,7 +156,7 @@ class STEM_Dataset(Dataset):
 
     def view_log(self,index):
         with h5py.File(self.h5_name, 'r+') as h5:
-            return h5['processed_data'][index]
+            return h5['processed'][index]
 
 
         # # Determine which dask array to access based on the index
@@ -374,7 +377,7 @@ class STEM_EELS_Dataset(Dataset):
                                                 self.spec_len) for inds in self.meta['eels_axis_inds']]
 
         # TODO: make this into a separate function
-        if self.mode[0]=='processed_data': 
+        if self.mode[0]=='processed': 
             self.write_processed(overwrite_eels, overwrite_diff)
         elif self.mode[0][:10]=='kernel_sum': 
             self.write_kernel_sum(kernel_size, overwrite_eels, overwrite_diff)
@@ -476,7 +479,7 @@ class STEM_EELS_Dataset(Dataset):
                     if stop<len(self): _,eels = self[start:stop]
                     else: _,eels = self[start:]
                     
-                    h[f'{self.mode[0]}/eels_mean_image'][start:stop,:] = [eels.mean(axis=-1) for spec in eels]
+                    h[f'{self.mode[0]}/eels_mean_image'][start:stop,:] = eels.mean(axis=-1)
                     h[f'{self.mode[0]}/eels_mean_spectrum'][i] = sum(eels)/len(eels)
                     h.flush()
             
@@ -490,30 +493,37 @@ class STEM_EELS_Dataset(Dataset):
             return h[f'{self.mode[0]}/eels_mean_spectrum'][p,e]
         
     def write_processed(self,overwrite_eels=False,overwrite_diff=False):
+        """
+        Write processed data to an HDF5 file.
+        Parameters:
+        - overwrite_eels (bool): Whether to overwrite the eels dataset. Default is False.
+        - overwrite_diff (bool): Whether to overwrite the diff dataset. Default is False.
+        """
         with h5py.File(self.h5_name,'a') as h:
-            if 'processed_data' not in h:
-                print('\nwriting processed_data h5 datasets')
+            if 'processed' not in h:
+                print('\nwriting processed h5 datasets')
                 overwrite_eels = True
-                overwrite_diff = True
-                h.create_group('processed_data')       
+                # overwrite_diff = True
+                h.create_group('processed')       
                 
-                for k,v in self.meta.items(): # write metadata
-                        if isinstance(v[0],tuple):
-                            h['processed_data'].attrs[k] = [tup[0] for tup in v]
-                        else:
-                            h['processed_data'].attrs[k] = v         
+                # for k,v in self.meta.items(): # write metadata
+                #         if isinstance(v[0],tuple):
+                #             h['processed'].attrs[k] = [tup[0] for tup in v]
+                #         else:
+                #             h['processed'].attrs[k] = v         
                                    
             if overwrite_eels: # eels min max scaling
                 print('\nwriting eels datasets')
-                del h['processed_data/eels']
-                h['processed_data'].create_dataset('eels', shape=(self.length,self.eels_chs,self.spec_len), dtype=float)
+                try: del h['processed/eels']
+                except: pass
+                h['processed'].create_dataset('eels', shape=(len(self),self.eels_chs,self.spec_len), dtype=float)
                 
                 for i,data in enumerate(tqdm(self.data_list)): 
                     # find 0 peak shift
                     shift_0 = data[1].argmax(axis=2).flatten() - self.ll_i0
                     
-                    for ind, spec_ind in enumerate(self.meta['eels_axis_labels']):
-                        dset_slice = h['processed_data/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind]
+                    for ind, spec_ind in enumerate(self.meta['eels_axis_inds']):
+                        dset_slice = h['processed/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind]
                         istart = shift_0.rechunk(chunks=(1024,1)) + spec_ind[0]
                         data_ = data[spec_ind[2]+1].reshape((-1,1024)).rechunk(chunks=(1024,1024,))
                         
@@ -537,18 +547,18 @@ class STEM_EELS_Dataset(Dataset):
                                                new_axis=[1], 
                                                chunks = (1024,self.spec_len), )     
                         da.store(result, dset_slice)
-                        h['processed_data/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind] = dset_slice
+                        h['processed/eels'][self.meta['particle_inds'][i]:self.meta['particle_inds'][i+1],ind] = dset_slice
                         h.flush()
                               
             if overwrite_diff: # take the log. min max scaling
                 print('\nwriting diff datasets')
-                del h['processed_data/diff']
-                h['processed_data'].create_dataset('diff', shape=(self.length,1,512, 512), dtype=float)
+                del h['processed/diff']
+                h['processed'].create_dataset('diff', shape=(self.length,1,512, 512), dtype=float)
                 for i,data_ in enumerate(tqdm(self.data_list)): 
                     # 4%|▎         | 1/27 [00:18<08:10, 18.85s/it]\
                     data__ = da.log(data_[0].reshape((-1,1,512,512)) + 1)
                     data__ = (data__ - data__.min())/data__.max()
-                    h['processed_data/diff'][self.meta['particle_inds'][i]:\
+                    h['processed/diff'][self.meta['particle_inds'][i]:\
                                                         self.meta['particle_inds'][i+1]] = data__
                     h.flush()             
                    
@@ -666,9 +676,9 @@ class STEM_EELS_Dataset(Dataset):
         start = self.meta['particle_inds'][i]
         stop = self.meta['particle_inds'][i+1]
         with h5py.File(self.h5_name, 'r+') as h:
-            diff = h['processed_data/diff'][start:stop]
-            ll = h['processed_data/ll'][start:stop]
-            hl = h['processed_data/hl'][start:stop]
+            diff = h['processed/diff'][start:stop]
+            ll = h['processed/ll'][start:stop]
+            hl = h['processed/hl'][start:stop]
         return diff,ll,hl
     
     def flattened_coord(self,x,y,p):
@@ -784,7 +794,112 @@ class STEM_EELS_Dataset(Dataset):
 
         return return_tuple
 
-from bisect import bisect_left,bisect_right
+from torch.utils.data.sampler import Sampler
+
+class Nearby_Gaussian_Sampler(Sampler):
+    r"""Yield a mini-batch of indices. 
+
+    Args:
+        data: Dataset for building sampling logic.
+        batch_size: Size of mini-batch.
+    """
+
+    def __init__(self, data, batch_size):
+        # build data for sampling here
+        self.batch_size = batch_size
+        self.data = data
+        self.shapes = data.meta['shape_list']
+        self.particle_inds = data.meta['particle_inds']
+        self.sigma=1
+        self.num_px=10
+        self.chosen = []
+        self.inds = [[i] for i in range(len(data))]
+        self.used_p_inds = []
+        self.sample_radius = 1
+    
+    def _retrive_idx(self, idx):
+        p_ind = bisect_right(self.particle_inds, idx) - 1
+        shape = self.shapes[p_ind]
+        x,y = np.unravel_multi_index( idx-self.particle_inds[p_ind], shape)
+
+        # Compute new pixel coordinates        
+        new_x = int(x + round(torch.random.normal(0, self.sigma)))  
+        new_y = int(y + round(torch.random.normal(0, self.sigma)))
+        
+        try: return self.check_index(p_ind, shape, new_x, new_y)
+        except: pass
+        
+    def _check_index(self,p_ind, shape, new_x, new_y):
+        # Ensure the new coordinates are within the image boundaries        
+        if 0 <= new_x < shape[0] and 0 <= new_y < shape[1]:
+            new_idx = self.particle_inds[p_ind] + np.ravel_multi_index((new_x,new_y),shape)
+            try: return self.inds[new_idx].pop() # wont work if list is empty
+            except:
+                if recursive_depth > shape[0]*shape[1]: 
+                    self.used_p_inds.append(p_ind)
+                    raise ValueError('no more pixels to sample. choose new p_ind')
+                # try again with an adjacent pixel
+                else: return self.surrounding_pixels(p_ind, shape, new_x, new_y,self.sample_radius)
+                
+    def _get_surrounding_pixels(self,p_ind, shape, x, y, radius):
+        # get all pixels in a radius around the pixel
+        x_range = torch.arange(max(0, x-radius),min(shape[0], x+radius))
+        y_range = torch.arange(max(0, y-radius),min(shape[1], y+radius))
+        x,y = torch.meshgrid(x_range,y_range)
+        flattened_inds = np.ravel_multi_index((x.flatten(),y.flatten()),shape)
+        results = flattened_inds-self.chosen
+        
+        if len(results) > 0:
+            return np.choice(results)
+        else:
+            self.used_p_inds.append(p_ind)
+            raise ValueError('no more pixels to sample. choose new p_ind')
+        
+            
+    def __iter__(self):
+        # implement logic of sampling here
+        batch = []
+        
+        for i, idx in enumerate(self.idxs):
+            selected=[]
+            while len(selected) < self.num_pixels:
+                p_ind = bisect_right(self.particle_inds, idx) - 1 # index of the particle
+                shape = self.shapes[p_ind] # shape of the image
+                x,y = np.unravel_multi_index( idx-self.particle_inds[p_ind], shape) # x,y coordinates of the index in image of particle
+                
+                
+                
+                if len(batch) == self.batch_size:
+                    yield batch
+                    batch = []
+
+    def __len__(self):
+        return len(self.data)
+    
+    def select_gaussian_nearby_pixels(self, center, shape, sigma=1.0, num_pixels=10):    
+        """    
+        Select nearby pixels randomly using a Gaussian distribution around a center pixel.    
+        Parameters:    center (tuple): The (x, y) coordinates of the center pixel.    
+        shape (tuple): The shape of the image as (height, width).    
+        sigma (float): The standard deviation of the Gaussian distribution.    
+        num_pixels (int): The number of nearby pixels to select.    
+        Returns:    list of tuples: A list of (x, y) coordinates for the nearby pixels.    
+        """    
+        height, width = shape    
+        center_x, center_y = center    
+        selected_pixels = []    
+        while len(selected_pixels) < num_pixels:        
+            # Sample the offset from the Gaussian distribution        
+            offset_x = torch.random.normal(0, sigma)        
+            offset_y = torch.random.normal(0, sigma)        
+            # Compute new pixel coordinates        
+            new_x = int(round(center_x + offset_x))        
+            new_y = int(round(center_y + offset_y))        
+            # Ensure the new coordinates are within the image boundaries        
+            if 0 <= new_x < width and 0 <= new_y < height:            
+                selected_pixels.append((new_x, new_y))
+                
+        return selected_pixels 
 
 class EELS_Embedding_Dataset():
     def __init__(self,dset,model):
@@ -794,6 +909,29 @@ class EELS_Embedding_Dataset():
         self.embs = None
         self.fits =  None
         self.shape = ((self.__len__(),)+self[0][0].shape)
+
+
+    def discrete_dielectric_function(self,i=0,e=0,c=1,extend_tail=1,):
+        x_len = int(self.dset.spec_len*extend_tail)
+        
+        # Define the frequency (omega) range for which you want to compute epsilon_1
+        x_ = np.arange(x_len)
+
+        emb,fits = self[i,e,c]
+
+        if extend_tail==1: epsilon_2 = fits
+        # else: epsilon_2 = self.model.function()
+
+        # Define the integrand for the Kramers-Kronig relation
+        integrand = []
+        for x in x_: 
+            x_new = x_
+            x_new[x]=0
+            integrand.append((epsilon_2 * x /(x_new**2 - x**2)).sum())
+        # Compute the real part epsilon_1(omega) using the Kramers-Kronig relation
+        epsilon_1 = [(2/np.pi)*itg for itg in integrand]
+        
+        return epsilon_1,epsilon_2
     
     def __len__(self):
         return len(self.dset)
@@ -880,4 +1018,87 @@ class EELS_Embedding_Dataset():
         
         return np.array(emb_list).squeeze(), np.array(fits_list).squeeze()
 
+import numpy as np
+import torch
+from torch.utils.data import Sampler
+
+class StackedEELSSampler(Sampler):
+    def __init__(self, dataset_shapes, batch_size, gaussian_std=5, num_neighbors=10):
+        """
+        Custom Gaussian Sampler for stacked EELS dataset with multiple datacubes of different sizes.
+
+        Args:
+            dataset_shapes (list of tuples): List of shapes of each datacube in the dataset, e.g., [(128, 128, 2, 969), (140, 140, 2, 969), ...].
+            batch_size (int): Number of total points per minibatch.
+            gaussian_std (int): Standard deviation for Gaussian sampling around the first sampled point.
+            num_neighbors (int): Number of additional points to sample around the first point.
+        """
+        self.dataset_shapes = dataset_shapes
+        self.batch_size = batch_size
+        self.gaussian_std = gaussian_std
+        self.num_neighbors = num_neighbors
+        
+        # Compute the flattened sizes (H*W) for the image dimensions of each datacube
+        self.flattened_lengths = [shape[0] * shape[1] for shape in dataset_shapes]  # H * W for each datacube
+        self.total_length = sum(self.flattened_lengths)
+        self.cumulative_lengths = np.cumsum(self.flattened_lengths)  # Used to determine the datacube from an index
     
+    def _select_datacube(self, point_idx):
+        """Find which datacube the point index belongs to."""
+        for i, cum_length in enumerate(self.cumulative_lengths):
+            if point_idx < cum_length:
+                if i == 0:
+                    return i, point_idx  # datacube index and index within datacube
+                else:
+                    return i, point_idx - self.cumulative_lengths[i - 1]
+        raise IndexError("Point index out of range")
+
+    def _get_neighbors(self, datacube_idx, center_idx, shape):
+        """Sample neighbors around a given index within a specific datacube."""
+        H, W, _, _ = shape
+        flattened_size = H * W
+        neighbors = []
+        
+        while len(neighbors) < self.num_neighbors:
+            # Sample a shift from a normal distribution, apply it within the H*W flattened space
+            shift = int(np.random.normal(0, self.gaussian_std))
+            neighbor_idx = center_idx + shift
+
+            # Ensure the neighbor index is within the bounds of the flattened image (H*W)
+            if 0 <= neighbor_idx < flattened_size and neighbor_idx not in neighbors:
+                neighbors.append(neighbor_idx)
+
+        return neighbors
+
+    def __iter__(self):
+        """Return a batch of indices for each iteration."""
+        batch = []
+
+        while len(batch) < self.batch_size:
+            # Sample a random index in the global (flattened) space
+            random_idx = np.random.randint(0, self.total_length)
+
+            # Determine which datacube this index belongs to
+            datacube_idx, point_in_datacube = self._select_datacube(random_idx)
+
+            # Get the shape of the selected datacube
+            selected_shape = self.dataset_shapes[datacube_idx]
+
+            # Get neighbors around the selected point in the H*W flattened image
+            neighbors = self._get_neighbors(datacube_idx, point_in_datacube, selected_shape)
+
+            # For each point, we will generate a tuple (datacube_idx, point_in_datacube)
+            # to later index the correct datacube
+            batch.append((datacube_idx, point_in_datacube))
+            batch.extend([(datacube_idx, neighbor) for neighbor in neighbors])
+
+            if len(batch) >= self.batch_size:
+                break
+
+        # Yield a batch with size `batch_size`
+        yield batch[:self.batch_size]
+
+    def __len__(self):
+        """Return the number of batches per epoch."""
+        # This can be adjusted based on the desired number of iterations per epoch
+        return self.total_length // self.batch_size
