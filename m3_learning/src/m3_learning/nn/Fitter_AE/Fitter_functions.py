@@ -67,7 +67,7 @@ def generate_pseudovoigt_1D(embedding, dset, limits=[1,975,25,1,25,1], device='c
     return pseudovoigt.to(torch.float32)
 
 
-def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 10, 10, 10, 10, 0.5], device='cpu', return_params=False):
+def generate_pseudovoigt_2D(embedding, out_shape, limits=[1, 10, 10, 10, 10], device='cpu', return_params=False):
     '''embedding is: 
         A: Area under curve
         I_b: baseline intensity

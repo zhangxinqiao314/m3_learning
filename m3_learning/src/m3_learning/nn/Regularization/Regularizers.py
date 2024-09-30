@@ -85,13 +85,18 @@ class HigherOrderLoss(nn.Module):
         self.order = order
         
     def forward(self, x1, x2):
-        return torch.sum((x1-x2)**self.order)**(1/self.order)
+        return torch.sum(abs(x1-x2)**self.order)/len(x1)
         
 class LN_loss(nn.Module):
-    def __init__(self, coef, order,):
+    def __init__(self, coef, order, weighted=False):
         super(LN_loss, self).__init__()
         self.order = order
         self.coef = coef
+        self.weighted = weighted
         
     def forward(self,x):
-        return self.coef*(x**self.order)**(1/self.order)
+        if not self.weighted:
+            return torch.sum(self.coef*(x**self.order)**(1/self.order))
+        else:
+            coef = torch.linspace(0,self.coef,x.shape[1]).repeat(x.shape[0],1)
+            return torch.sum(coef*(x**self.order)**(1/self.order))

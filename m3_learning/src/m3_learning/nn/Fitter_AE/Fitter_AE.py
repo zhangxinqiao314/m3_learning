@@ -6,165 +6,61 @@ from torch.utils.data import DataLoader
 
 from ..STEM_AE.STEM_AE import ConvBlock, IdentityBlock
 from .spot_fitting import *
-from ....m3_learning.viz import make_folder
-from ....m3_learning.nn.Regularization import LN_loss #, ContrastiveLoss, DivergenceLoss, Sparse_Max_Loss,
+from ...util.file_IO import make_folder
+from ...nn.Regularization.Regularizers import LN_loss, HigherOrderLoss #, ContrastiveLoss, DivergenceLoss, Sparse_Max_Loss,
 
 import os
 from datetime import date
-import wandb
+# import wandb
 from tqdm import tqdm
 
+import wandb
+wandb.login()
 
-# TODO: do you want this or the encoder from stead ae folder?
-class Multiscale2DFitter(nn.Module):
-    def __init__(self, function, x_data, input_channels, num_params, num_fits, limits=[1, 1, 10, 10, 10, 10, 0.5], scaler=None, 
-                 post_processing=None, device="cuda", loops_scaler=None, flatten_from=1, 
-                 x1_ch_list=[8,6,4], x1_pool=64, x2_pool_list=[16,8,4], x2_ch_list=[8,16],
-                 dense_list=[24,16,8], **kwargs):
+
+class masking_threshold_loss(nn.Module): #TODO: break into channel-scaled coef loss and sparse max loss
+    def __init__(self,loss_function=torch.nn.MSELoss(), threshold=3e-5,at_least=10,i_limits=(10)):
         """_summary_
 
-
         Args:
-            function (_type_): _description_
-            x_data (_type_): _description_
-            input_channels (_type_): number of channels in orig data. ex. 2 channels: high loss, low loss
-            num_params (_type_): number of parameters needed to generate the fit
-            num_fits (_type_): the number of peaks to include
-            limits (list):  limits for [A_g, A_l, x, sigma, gamma, nu]
-            scaler (_type_, optional): _description_. Defaults to None.
-            post_processing (_type_, optional): _description_. Defaults to None.
-            device (str, optional): _description_. Defaults to "cuda".
-            loops_scaler (_type_, optional): _description_. Defaults to None.
-            flatten_from (int, optional): _description_. Defaults to 1.
-        """        
-
-        self.input_channels = input_channels
-        self.scaler = scaler
-        self.function = function
-        self.x_data = x_data
-        self.device = device
-        self.num_params = num_params
-        self.num_fits = num_fits
-        self.loops_scaler = loops_scaler
-        self.flat_dim = flatten_from
-
-        super().__init__()
+            min_threshold (float, optional): if input is less than this value, it will not be penalized. Defaults to 3e-5. should not be too large
+            coef (float, optional): scale this loss value. Defaults to 1.
+        """
+        super(masking_threshold_loss, self).__init__()
+        self.threshold = threshold
+        self.loss_function = loss_function
+        self.at_least = at_least
         
-        self.limits = limits
-
-        # Input block of 1d convolution
-        self.hidden_x1 = nn.Sequential(
-            nn.Conv1d(in_channels=self.input_channels,
-                      out_channels=x1_ch_list[0], kernel_size=7),
-            nn.SELU(), nn.Conv2d(in_channels=x1_ch_list[0], #8
-                                 out_channels=x1_ch_list[1], kernel_size=7),
-            nn.SELU(), nn.Conv2d(in_channels=x1_ch_list[1], #6
-                                 out_channels=x1_ch_list[2], kernel_size=5), #4
-            nn.SELU(), nn.AdaptiveAvgPool2d(x1_pool)
-        )
-        x1_outsize = x1_pool*x1_ch_list[-1]
-        # print(x1_outsize)
-        # fully connected block
-        self.hidden_xfc = nn.Sequential(
-            nn.Linear(x1_outsize, x1_outsize//2), nn.SELU(),
-            nn.Linear(x1_outsize//2, x1_outsize//4), nn.SELU(),
-            nn.Linear(x1_outsize//4, x1_outsize//8), nn.SELU(),
-        )
-        xfc_outsize = x1_outsize//8
-        # print(xfc_outsize)
-        # 2nd block of 1d-conv layers
-        self.hidden_x2 = nn.Sequential(
-            nn.MaxPool1d(kernel_size=2),
-            nn.Conv1d(in_channels=x1_ch_list[2], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
-            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
-            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
-            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
-            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5), nn.SELU(), 
-            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[0], kernel_size=5),  nn.SELU(), 
-            nn.AdaptiveAvgPool1d(x2_pool_list[0]),  # Adaptive pooling layer
-            nn.Conv1d(in_channels=x2_ch_list[0], out_channels=x2_ch_list[1], kernel_size=3), nn.SELU(), 
-            nn.AdaptiveAvgPool1d(x2_pool_list[1]),  # Adaptive pooling layer
-            nn.Conv1d(in_channels=x2_ch_list[1], out_channels=x1_ch_list[-1], kernel_size=3), nn.SELU(), 
-            nn.AdaptiveAvgPool1d(x2_pool_list[2]),  # Adaptive pooling layer
-        )
-        x2_outsize = x2_pool_list[2]*x1_ch_list[-1]
-        # print(x2_outsize)
-        # Flatten layer
-        self.flatten_layer = nn.Flatten() # flatten to batch,-1
-
-        # Final embedding block - Output 4 values - linear
-        self.hidden_embedding = nn.Sequential(
-            nn.Linear(xfc_outsize+x2_outsize, dense_list[0]), nn.SELU(),
-            nn.Linear(dense_list[0], dense_list[1]), nn.SELU(),
-            nn.Linear(dense_list[1], self.num_params*num_fits*input_channels),
-        )
-
-    def forward(self, x, n=-1, return_sum=True):
-        # output shape - samples, spec_channels, frequency
-        # x = torch.swapaxes(x, 1, 2)
-        s=x.shape
-        x = self.hidden_x1(x)
-        # print('x1 shape:', x.shape)
-        xfc = torch.reshape(x, (x.shape[0], -1))  # batch size, channels, features
-        xfc = self.hidden_xfc(xfc)
-        # print('xfc shape:', xfc.shape)
-
-        # batch size, spec_channels, timesteps
-        # x = torch.reshape(x, (x.shape[0], -1))
-        x = self.hidden_x2(x)
-        # print('x2 shape:', x.shape)
-        cnn_flat = self.flatten_layer(x)
-        # print('flat:',cnn_flat.shape)
-
-        encoded = torch.cat((cnn_flat, xfc), -1)  # merge dense and 1d conv.
-        # print('encoded shape:', encoded.shape)
-        embedding = self.hidden_embedding(encoded)
-        embedding = embedding.reshape(x.shape[0]*self.input_channels, self.num_fits, self.num_params)
+    def forward(self, x, predicted):
+        ''' x (tensor): shape (batchsize, n). n is the number of channels '''
+        b_,t_,ch_,x_,y_ = x.shape
+        x_flattened = x.view(-1,x_*y_)
+        pred_flattened = predicted.view(-1,x_*y_)
+        x_sorted, inds = torch.sort(x_flattened, dim=1, descending=True)
+        pred_sorted = torch.gather(pred_flattened, 1, inds)
+        i = self.at_least-1
+        loss = 0
+        while loss<self.threshold:
+            i+=1
+            loss = self.loss_function(x_sorted[:,:i], pred_sorted[:,:i])/i
+            if i==x_*y_: 
+                self.threshold*=0.95 # prevent using all pixels in img
+                break
+        # print(i,loss,self.threshold)
+        if i == self.at_least: self.threshold*=1.05 # prevent from only using a few pixels in img
+                
+        # mask = torch.zeros_like(x_flattened)
+        # mask[inds[:,:i]] = 1
+        return loss,i,self.threshold
         
-        # unscaled_param = embedding
-
-        # if self.scaler is not None:
-        #     # corrects the scaling of the parameters
-        #     unscaled_param = (
-        #         embedding *
-        #         torch.tensor(self.scaler.var_ ** 0.5).cuda()
-        #         + torch.tensor(self.scaler.mean_).cuda()
-        #     )
-        # else:
-            # unscaled_param = embedding
-
-        # passes to the pytorch fitting function
-        fits,params = self.function(
-            embedding, self.x_data, limits=self.limits, device=self.device,return_params=True)
-        # print('fitted shape:', fits.shape)
-        
-        if not return_sum:
-            return params, fits
-        
-        out = fits.sum(axis=1).reshape(s)
-
-        # Does the post processing if required
-        if self.post_processing is not None:
-            out = self.post_processing.compute(out)
-        else:
-            out = out
-
-        if self.loops_scaler is not None:
-            out_scaled = (out - torch.tensor(self.loops_scaler.mean).cuda()) / torch.tensor(
-                self.loops_scaler.std).cuda()
-        else:
-            out_scaled = out
-        
-        return params,out_scaled
-
-        if self.training == True:
-            return out_scaled, unscaled_param
-        if self.training == False:
-            # this is a scaling that includes the corrections for shifts in the data
-            embeddings = (unscaled_param.cuda() - torch.tensor(self.scaler.mean_).cuda()
-                          )/torch.tensor(self.scaler.var_ ** 0.5).cuda()
-            return out_scaled, embeddings, unscaled_param
-
+def get_mask(x,predicted,i):
+    b_,t_,ch_,x_,y_ = x.shape
+    x_flattened = x.view(-1,x_*y_)
+    pred_flattened = predicted.view(-1,x_*y_)
+    pred_sorted, inds = torch.sort(pred_flattened, dim=1, descending=True)
+    mask = torch.zeros_like(x_flattened)
+    mask[inds[:,:i]] = 1
+    return mask
 
 class PV_Encoder_2D(nn.Module):
     """Encoder block
@@ -173,7 +69,8 @@ class PV_Encoder_2D(nn.Module):
         nn (nn.Module): Torch module class
     """
 
-    def __init__(self, original_step_size, pooling_list, embedding_size, conv_size, num_fits):
+    def __init__(self, original_step_size, pooling_list, 
+                 embedding_size, conv_size, num_fits):
         """Build the encoder
 
         Args:
@@ -184,6 +81,8 @@ class PV_Encoder_2D(nn.Module):
         """
 
         super(PV_Encoder_2D, self).__init__()
+        self.embedding_size = embedding_size
+        self.num_fits = num_fits
 
         blocks = []
 
@@ -267,9 +166,10 @@ class PV_AE(nn.Module):
         nn (nn.Module): Torch module class
     """
 
-    def __init__(self, encoder, fitter_function, 
-                 limits=[1, 10, 10, 10, 10, 0.5]
-                 ):
+    def __init__(self, encoder, 
+                 fitter_function, 
+                 limits=[1, 10, 10, 10, 10, 0.5],
+                 device='cuda'):
         """Build the encoder
 
         Args:
@@ -284,7 +184,7 @@ class PV_AE(nn.Module):
         self.encoder = encoder
         self.fitter_function = fitter_function
         self.limits = limits
-        self.device = next(self.parameters()).device
+        self.device=device
         
     def forward(self,tiles):
         ''' tiles shape (batch*spots,ch,x,y)'''
@@ -297,10 +197,10 @@ class PV_AE(nn.Module):
 
 class PV_Fitter_2D():
         
-    def __init__(self, function, 
+    def __init__(self, fitter_function, dset, 
                  encoder, encoder_init,
-                 autoencoder, autoencoder_init, 
-                 dset, input_channels, num_params, num_fits, 
+                 autoencoder, autoencoder_init,
+                  #input_channels, num_params, num_fits, 
                  limits=[1, 10, 10, 10, 10, 0.5], scaler=None, 
                  post_processing=None, device="cuda", 
                  loops_scaler=None, flatten_from=1, 
@@ -308,7 +208,8 @@ class PV_Fitter_2D():
                  emb_h5 = './embeddings_2D.h5',
                  gen_h5= './generated_2D.h5',
                  folder='./save_folder',
-                 wandb_project = None):
+                 wandb_project = None,
+                 initial_masking_threshold=1e-3):
         """_summary_
 
         Args:
@@ -324,18 +225,20 @@ class PV_Fitter_2D():
             loops_scaler (_type_, optional): _description_. Defaults to None.
             flatten_from (int, optional): _description_. Defaults to 1.
         """        
-        self.input_channels = input_channels
+        self.start_epoch=0
+        # self.input_channels = input_channels
         self.scaler = scaler
-        self.function = function
+        self.fitter_function = fitter_function
         self.dset = dset
         self.post_processing = post_processing
         self.device = device
-        self.num_params = num_params
-        self.num_fits = num_fits
+        # self.num_params = num_params
+        # self.num_fits = num_fits
         self.limits = limits
         self.loops_scaler = loops_scaler
         self.flat_dim = flatten_from
         self.learning_rate = learning_rate
+        self.masking_threshold = initial_masking_threshold
 
         self._checkpoint = None
         self._folder = folder
@@ -346,10 +249,10 @@ class PV_Fitter_2D():
         
         self.train = False
 
-        self.encoder = encoder(**self.encoder_init).to(self.device)        
-        self.Fitter = autoencoder(function=self.function,**autoencoder_init).to(self.device)
-        # self.Fitter = self.Fitter.to(self.device)
-        # sets the datatype of the model to float32
+        self.encoder = encoder(**encoder_init).to(self.device)        
+        self.Fitter = autoencoder(encoder = self.encoder,
+                                  fitter_function=self.fitter_function,
+                                  **autoencoder_init).to(self.device)
         self.Fitter.type(torch.float32)
 
         # sets the optimizers
@@ -370,7 +273,6 @@ class PV_Fitter_2D():
     
     @property
     def checkpoint(self): return self._checkpoint
-    
     @checkpoint.setter
     def checkpoint(self, value):
         self._checkpoint = value
@@ -408,21 +310,24 @@ class PV_Fitter_2D():
     def Train(self,
               data,
               max_learning_rate=1e-4,
-              coef_1=0, 
+              with_scheduler=True,
+              seed=12,
+              epoch_=None,
+              epochs=100,
+              batch_size=32,
+              minibatch_logging_rate=None,
+              wandb_init={},
+              primary_loss_function=torch.nn.MSELoss,
+              primary_loss_init=lambda e: {},
+              weighted_ln=False,    
+              ln_parm=lambda e: 2,
+              coef_1=lambda e: 0, 
               coef_2=0,
               coef_3=0,
               coef_4=0,
               coef_5=0,
-              seed=12,
-              epochs=100,
-              with_scheduler=True,
-              ln_parm=2,
-              epoch_=None,
-              batch_size=32,
               best_train_loss=None,
-              save_emb_every=None,
-              minibatch_logging_rate=None,
-              wandb_init={}):
+              save_emb_every=None,):
         """Function that trains the model
         
             Args:
@@ -466,10 +371,6 @@ class PV_Fitter_2D():
         # initializes the best train loss
         if best_train_loss == None: best_train_loss = float('inf')
 
-        # initialize the epoch counter
-        if epoch_ is None: self.start_epoch = 0
-        else: self.start_epoch = epoch_
-
         if self.wandb_project is not None:  
             wandb_init['project'] = self.wandb_project
             wandb.init(**wandb_init) # figure out config later
@@ -482,9 +383,16 @@ class PV_Fitter_2D():
                 print('.............................')
                 fill_embeddings = self.get_embedding(data, train=True)
 
-            loss_dict = self.loss_function(
-                self.DataLoader_, coef_1, coef_2, coef_3, coef_4, ln_parm,
-                fill_embeddings=fill_embeddings, minibatch_logging_rate=minibatch_logging_rate)
+            loss_dict = self.loss_function(self.DataLoader_, 
+                                               primary_loss_function(**primary_loss_init(epoch)),
+                                               ln_parm(epoch),
+                                               coef_1(epoch), 
+                                               coef_2, 
+                                               coef_3, 
+                                               coef_4, 
+                                               coef_5, 
+                                               fill_embeddings=fill_embeddings, 
+                                               minibatch_logging_rate=minibatch_logging_rate)
             # divide by batches inplace
             loss_dict.update( (k,v/len(self.DataLoader_)) for k,v in loss_dict.items())
             
@@ -495,16 +403,14 @@ class PV_Fitter_2D():
           #  schedular.step()
             lr_ = format(self.optimizer.param_groups[0]['lr'], '.5f')
             self.checkpoint = self.folder + f'/{save_date}_' +\
-                f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
-                f'_trainloss:{loss_dict["train_loss"]:.4f}.pkl'
+                f'epoch:{epoch:04d}'+'_lr:'+lr_ +\
+                f'_trainloss:{loss_dict["train_loss"]:.4e}.pkl'
             self.save_checkpoint(epoch,
                                 loss_dict=loss_dict,
-                                coef_1=coef_1, 
-                                coef_2=coef_2,
-                                coef_3=coef_3,
-                                coef_4=coef_4,
-                                coef_5=coef_5,
-                                ln_parm=ln_parm)
+                                **primary_loss_init(epoch),
+                                weighted_ln=weighted_ln,
+                                ln_parm=ln_parm(epoch),
+                                coef_1=coef_1(epoch),)
 
             if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
                 h = self.embedding.file
@@ -527,9 +433,10 @@ class PV_Fitter_2D():
 
     def save_checkpoint(self,epoch,loss_dict,**kwargs):
         checkpoint = {
-            "Fitter": self.Fitter.state_dict(),
+            'encoder': self.encoder.state_dict(),
+            'Fitter': self.Fitter.state_dict(),
             'optimizer': self.optimizer.state_dict(),
-            "epoch": epoch,
+            'epoch': epoch,
             'loss_dict': loss_dict,
             'loss_params': kwargs,
         }
@@ -537,16 +444,24 @@ class PV_Fitter_2D():
 
     def loss_function(self,
                       train_iterator,
+                      primary_loss_function=F.mse_loss,
+                      weighted_ln=False,    
+                      ln_parm=2,
                       coef1=0,
                       coef2=0,
                       coef3=0,
                       coef4=0,
                       coef5=0,
-                      ln_parm=1,
+                      loss_order=2,
                       beta=None,
                       fill_embeddings=False,
                       minibatch_logging_rate=None,
-                      mask_params={'min_threshold':3e-5,'coef':0.01,'channels':1,'ln_parm':2,'at_least':0}):
+                      mask_params={'min_threshold':3e-5,
+                                   'coef':0.01,
+                                   'channels':1,
+                                   'ln_parm':2,
+                                   'at_least':0}
+                      ):
         """computes the loss function for the training
 
         Args:
@@ -565,21 +480,24 @@ class PV_Fitter_2D():
 
         # loss of the epoch
         loss_dict = {'ln_loss': 0,
+                     'weighted_ln_loss': 0,
                     #  'contras_loss': 0,
                     #  'maxi_loss': 0,
-                    #  'masking_loss': 0,
-                     'train_loss': 0,
                     #  'sparse_max_loss': 0,
                     #  'l2_batchwise_loss': 0,
+                     'masking_loss': 0,
+                     'n_pxs': 0,
+                     'masking_threshold': 0,
+                     'train_loss': 0,
                      }
         # weighted_ln_ = Weighted_LN_loss(coef=coef1,channels=self.num_fits).to(self.device)
-        ln_ = LN_loss(coef1, ln_parm).to(self.device)
+        ln_ = LN_loss(coef1, ln_parm, weighted_ln).to(self.device)
         # con_l = ContrastiveLoss(coef2).to(self.device)
         # maxi_ = DivergenceLoss(train_iterator.batch_size, coef3).to(self.device)
         # sparse_max = Sparse_Max_Loss(min_threshold=self.learning_rate,
         #                                 channels=self.num_fits, 
         #                                 coef=coef4).to(self.device)
-        
+        n_pxs=0
         for i,(idx,x) in enumerate(tqdm(train_iterator, leave=True, total=len(train_iterator))):
             # tic = time.time()
 
@@ -593,7 +511,7 @@ class PV_Fitter_2D():
 
             if coef1 > 0: 
                 reg_loss_1 = ln_(embedding[:,:,0])
-                loss_dict['weighted_ln_loss']+=reg_loss_1
+                loss_dict['ln_loss']+=reg_loss_1
             else: reg_loss_1 = 0
 
             # if coef2 > 0: 
@@ -617,10 +535,11 @@ class PV_Fitter_2D():
             #     loss_dict['l2_batchwise_loss'] += l2_loss
             # else: l2_loss = 0
             
-            # reconstruction loss TODO: try getting rid of this
-            masking_loss = masking_threshold_loss(min_threshold=3e-5,coef=0.01,channels=1,ln_parm=2,at_least=at_least)
-            loss,mask,at_least = masking_loss(x, predicted_x)
-
+            masking_loss = masking_threshold_loss(loss_function=primary_loss_function, 
+                                                  threshold=self.masking_threshold,)
+            loss,pxs,masking_threshold = masking_loss(x, predicted_x)
+            loss_dict['n_pxs']+= pxs
+            loss_dict['masking_threshold'] += masking_threshold
             loss_dict['masking_loss'] += loss.item()
             
             loss = loss + reg_loss_1 #+ contras_loss - maxi_loss + l2_loss
@@ -640,7 +559,7 @@ class PV_Fitter_2D():
                 # print('\tt', abs(tic-toc)) # 2.7684452533721924
             if minibatch_logging_rate is not None: 
                 if i%minibatch_logging_rate==0: wandb.log({k: v/(i+1) for k,v in loss_dict.items()})
-
+        
         return loss_dict
 
     def load_weights(self, path_checkpoint):
@@ -651,6 +570,7 @@ class PV_Fitter_2D():
         """
         self.checkpoint = path_checkpoint
         checkpoint = torch.load(path_checkpoint)
+        self.encoder.load_state_dict(checkpoint['encoder'])
         self.Fitter.load_state_dict(checkpoint['Fitter'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.start_epoch = checkpoint['epoch']
@@ -668,7 +588,6 @@ class PV_Fitter_2D():
             print(error)
             print('Generated not opened')
 
-        
     def load_loss_data(self, path_checkpoint):
         """loads the weights from a checkpoint
 
@@ -681,7 +600,7 @@ class PV_Fitter_2D():
         loss_params = checkpoint['loss_params']
         return start_epoch,loss_dict, loss_params
     
-    def get_embedding(self, data, batch_size=32,train=True,check=None):
+    def get_embedding(self, data, batch_size=32,train=True,check=None,write_mask=False):
         """extracts embeddings from the data
 
         Args:
@@ -694,7 +613,7 @@ class PV_Fitter_2D():
 
         # builds the dataloader
         dataloader = DataLoader(data, batch_size, shuffle=False)
-        s = data.shape[1]
+        # s = data.shape[1]
         try:
             try: h = h5py.File(f'{self.folder}/{self.emb_h5}','w')
             except: h = h5py.File(f'{self.folder}/{self.emb_h5}','r+')
@@ -705,8 +624,7 @@ class PV_Fitter_2D():
             # make embedding dataset
             try:
                 embedding_ = h.create_dataset(f'embedding_{check}', 
-                                            #   data = np.zeros([s[0], s[1], self.num_fits, self.num_params]),
-                                              shape=(s[0], s[1], self.num_fits, self.num_params),
+                                              shape=(len(data),len(data.tile_coords), self.encoder.num_fits, self.encoder.embedding_size),
                                               dtype='float32')  
             except: 
                 embedding_ = h[f'embedding_{check}']
@@ -715,11 +633,21 @@ class PV_Fitter_2D():
             try:
                 fits_ = h.create_dataset(f'fits_{check}', 
                                         #  data = np.zeros([s[0],self.num_fits,s[1],s[2]]),
-                                         shape = (s[0],s[1],self.num_fits,s[2]),
+                                         shape=(len(data),len(data.tile_coords),data.r*2,data.r*2),
                                          dtype='float32')  
             except:
-                fits_ = h[f'fits_{check}']
-
+                fits_ = h[f'fits_{check}']           
+            
+            # make mask dataset
+            if write_mask:
+                try:
+                    mask_ = h.create_dataset(f'mask_{check}', 
+                                              shape=(len(data),len(data.tile_coords),data.r*2,data.r*2),
+                                              dtype='float32')  
+                except: 
+                    mask_ = h[f'mask_{check}']
+                    self.masks = mask_
+            
             self.embedding = embedding_
             self.fits = fits_
 
@@ -728,7 +656,7 @@ class PV_Fitter_2D():
             assert train,"No h5_dataset embedding dataset created"
             print('Warning: not saving to h5')
                 
-        if train: 
+        if self.train: 
             print('Created empty h5 embedding datasets to fill during training')
             return 1 # do not calculate. 
             # return true to indicate this is filled during training
@@ -741,11 +669,15 @@ class PV_Fitter_2D():
                     batch_size = x.shape[0]
                     test_value = Variable(value.to(self.device))
                     test_value = test_value.float()
-                    embedding,fit = self.Fitter(test_value,return_sum=False)
+                    embedding,fit = self.Fitter(test_value)
                     
                     self.embedding[i*batch_size:(i+1)*batch_size] = embedding.reshape(batch_size,s[1],s[2],s[3]).cpu().detach().numpy()
-                    self.fits[i*batch_size:(i+1)*batch_size] = fit.reshape(batch_size,s[1],self.num_fits,-1).cpu().detach().numpy()
-                   
+                    self.fits[i*batch_size:(i+1)*batch_size] = fit.reshape(batch_size,s[1],data.r*2,data.r*2).cpu().detach().numpy()
+                    
+                    if write_mask: 
+                        masks = get_mask(fit,self.pxs)
+                        self.masks[i*batch_size:(i+1)*batch_size] = masks
+                        
         h.close()
         
     def get_clusters(self,dset,scaled_array,n_components=None,n_clusters=None):

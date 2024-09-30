@@ -233,35 +233,6 @@ class Spot_Dataset(Stacked_4DSTEM):
 
 # TODO: make ae utils
 
-class masking_threshold_loss(nn.Module): #TODO: break into channel-scaled coef loss and sparse max loss
-    def __init__(self,min_threshold=3e-5,at_least=50):
-        """_summary_
-
-        Args:
-            min_threshold (float, optional): if input is less than this value, it will not be penalized. Defaults to 3e-5. should not be too large
-            coef (float, optional): scale this loss value. Defaults to 1.
-        """
-        super(masking_threshold_loss, self).__init__()
-        self.threshold = min_threshold
-        self.mse = torch.nn.MSELoss()
-        self.at_least = at_least
-        
-    def forward(self, x, predicted):
-        ''' x (tensor): shape (batchsize, n). n is the number of channels '''
-        bsize = x.shape[0]
-        pred_sorted, inds = torch.sort(predicted.reshape(bsize,-1), dim=1, descending=True)
-        x_flattened = x.reshape(bsize,-1)
-        i = self.at_least
-        loss = 0
-        while loss<self.threshold:
-            loss = self.mse(x_flattened[inds], pred_sorted[:,:i])/i
-            i+=1
-        mask = torch.zeros_like(x_flattened)
-        mask[inds[:,:i]] = 1
-        
-        return loss,mask.reshape(x.shape),i
-        
-        
 from torch.autograd import Variable
 
 # TODO: make spot visualizer (plot diffraction and have spot locations)
