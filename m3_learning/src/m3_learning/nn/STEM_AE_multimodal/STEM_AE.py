@@ -2,12 +2,15 @@ import sys
 import os
 from os.path import join as pjoin
 
+from more_itertools import collapse, collate
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, RandomSampler
 import torch.nn.functional as F
 from torch.autograd import Variable
+
 
 from m3_learning.nn.Regularization.Regularizers import ContrastiveLoss, DivergenceLoss, Sparse_Max_Loss, Weighted_LN_loss
 from m3_learning.nn.random import random_seed
@@ -1132,7 +1135,10 @@ class FitterAutoencoder_1D():
                  emb_h5 = './embeddings_1D.h5',
                  gen_h5= './generated_1D.h5',
                  folder='./save_folder',
-                 wandb_project = None):
+                 wandb_project = None,
+                 dataloader_sampler=RandomSampler,
+                 custom_collate_fn=None,
+                 sampler_kwargs={}):
         """_summary_
 
         Args:
@@ -1169,6 +1175,8 @@ class FitterAutoencoder_1D():
         self.limits = limits
         self.loops_scaler = loops_scaler
         self.learning_rate = learning_rate
+        self.dataloader_sampler = dataloader_sampler(**sampler_kwargs)
+        self.custom_collate=custom_collate_fn
 
         self._checkpoint = None
         self._folder = folder
@@ -1292,8 +1300,7 @@ class FitterAutoencoder_1D():
         torch.manual_seed(seed)
 
         # builds the dataloader
-        self.DataLoader_ = DataLoader(
-            self.dset, batch_size=batch_size, shuffle=True)
+        self.DataLoader_ = DataLoader(self.dset, sampler=self.dataloader_sampler, collate_fn=self.custom_collate)
 
         # option to use the learning rate scheduler
         if with_scheduler:
@@ -1425,8 +1432,8 @@ class FitterAutoencoder_1D():
         
         for i,(idx,x) in enumerate(tqdm(train_iterator, leave=True, total=len(train_iterator))):
             # tic = time.time()
-
-            x = x.to(self.device, dtype=torch.float)
+            idx = idx.to(self.device).squeeze()
+            x = x.to(self.device, dtype=torch.float).squeeze()
 
             # update the gradients to zero
             self.optimizer.zero_grad()

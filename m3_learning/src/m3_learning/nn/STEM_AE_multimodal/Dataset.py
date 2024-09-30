@@ -2,6 +2,8 @@ from random import choice
 from tabnanny import check
 from turtle import shape
 from unittest import result
+
+from networkx import neighbors
 import numpy as np
 import hyperspy.api as hs
 import h5py
@@ -796,110 +798,6 @@ class STEM_EELS_Dataset(Dataset):
 
 from torch.utils.data.sampler import Sampler
 
-class Nearby_Gaussian_Sampler(Sampler):
-    r"""Yield a mini-batch of indices. 
-
-    Args:
-        data: Dataset for building sampling logic.
-        batch_size: Size of mini-batch.
-    """
-
-    def __init__(self, data, batch_size):
-        # build data for sampling here
-        self.batch_size = batch_size
-        self.data = data
-        self.shapes = data.meta['shape_list']
-        self.particle_inds = data.meta['particle_inds']
-        self.sigma=1
-        self.num_px=10
-        self.chosen = []
-        self.inds = [[i] for i in range(len(data))]
-        self.used_p_inds = []
-        self.sample_radius = 1
-    
-    def _retrive_idx(self, idx):
-        p_ind = bisect_right(self.particle_inds, idx) - 1
-        shape = self.shapes[p_ind]
-        x,y = np.unravel_multi_index( idx-self.particle_inds[p_ind], shape)
-
-        # Compute new pixel coordinates        
-        new_x = int(x + round(torch.random.normal(0, self.sigma)))  
-        new_y = int(y + round(torch.random.normal(0, self.sigma)))
-        
-        try: return self.check_index(p_ind, shape, new_x, new_y)
-        except: pass
-        
-    def _check_index(self,p_ind, shape, new_x, new_y):
-        # Ensure the new coordinates are within the image boundaries        
-        if 0 <= new_x < shape[0] and 0 <= new_y < shape[1]:
-            new_idx = self.particle_inds[p_ind] + np.ravel_multi_index((new_x,new_y),shape)
-            try: return self.inds[new_idx].pop() # wont work if list is empty
-            except:
-                if recursive_depth > shape[0]*shape[1]: 
-                    self.used_p_inds.append(p_ind)
-                    raise ValueError('no more pixels to sample. choose new p_ind')
-                # try again with an adjacent pixel
-                else: return self.surrounding_pixels(p_ind, shape, new_x, new_y,self.sample_radius)
-                
-    def _get_surrounding_pixels(self,p_ind, shape, x, y, radius):
-        # get all pixels in a radius around the pixel
-        x_range = torch.arange(max(0, x-radius),min(shape[0], x+radius))
-        y_range = torch.arange(max(0, y-radius),min(shape[1], y+radius))
-        x,y = torch.meshgrid(x_range,y_range)
-        flattened_inds = np.ravel_multi_index((x.flatten(),y.flatten()),shape)
-        results = flattened_inds-self.chosen
-        
-        if len(results) > 0:
-            return np.choice(results)
-        else:
-            self.used_p_inds.append(p_ind)
-            raise ValueError('no more pixels to sample. choose new p_ind')
-        
-            
-    def __iter__(self):
-        # implement logic of sampling here
-        batch = []
-        
-        for i, idx in enumerate(self.idxs):
-            selected=[]
-            while len(selected) < self.num_pixels:
-                p_ind = bisect_right(self.particle_inds, idx) - 1 # index of the particle
-                shape = self.shapes[p_ind] # shape of the image
-                x,y = np.unravel_multi_index( idx-self.particle_inds[p_ind], shape) # x,y coordinates of the index in image of particle
-                
-                
-                
-                if len(batch) == self.batch_size:
-                    yield batch
-                    batch = []
-
-    def __len__(self):
-        return len(self.data)
-    
-    def select_gaussian_nearby_pixels(self, center, shape, sigma=1.0, num_pixels=10):    
-        """    
-        Select nearby pixels randomly using a Gaussian distribution around a center pixel.    
-        Parameters:    center (tuple): The (x, y) coordinates of the center pixel.    
-        shape (tuple): The shape of the image as (height, width).    
-        sigma (float): The standard deviation of the Gaussian distribution.    
-        num_pixels (int): The number of nearby pixels to select.    
-        Returns:    list of tuples: A list of (x, y) coordinates for the nearby pixels.    
-        """    
-        height, width = shape    
-        center_x, center_y = center    
-        selected_pixels = []    
-        while len(selected_pixels) < num_pixels:        
-            # Sample the offset from the Gaussian distribution        
-            offset_x = torch.random.normal(0, sigma)        
-            offset_y = torch.random.normal(0, sigma)        
-            # Compute new pixel coordinates        
-            new_x = int(round(center_x + offset_x))        
-            new_y = int(round(center_y + offset_y))        
-            # Ensure the new coordinates are within the image boundaries        
-            if 0 <= new_x < width and 0 <= new_y < height:            
-                selected_pixels.append((new_x, new_y))
-                
-        return selected_pixels 
 
 class EELS_Embedding_Dataset():
     def __init__(self,dset,model):
@@ -1022,8 +920,89 @@ import numpy as np
 import torch
 from torch.utils.data import Sampler
 
-class StackedEELSSampler(Sampler):
-    def __init__(self, dataset_shapes, batch_size, gaussian_std=5, num_neighbors=10):
+# # with replacement
+# class EELS_Gaussian_Sampler(Sampler):
+#     def __init__(self, dset, batch_size, gaussian_std=5, num_neighbors=10):
+#         """
+#         Custom Gaussian Sampler for stacked EELS dataset with multiple datacubes of different sizes.
+
+#         Args:
+#             dataset_shapes (list of tuples): List of shapes of each datacube in the dataset, e.g., [(128, 128, 2, 969), (140, 140, 2, 969), ...].
+#             batch_size (int): Number of total points per minibatch.
+#             gaussian_std (int): Standard deviation for Gaussian sampling around the first sampled point.
+#             num_neighbors (int): Number of additional points to sample around the first point.
+#         """
+#         self.dset = dset
+#         self.dataset_shapes = dset.meta['shape_list']
+#         self.batch_size = batch_size
+#         self.gaussian_std = gaussian_std
+#         self.num_neighbors = num_neighbors
+#         self.batches = 0
+        
+#         # Compute the flattened sizes (H*W) for the image dimensions of each datacube
+
+#         self.particle_inds = dset.meta['particle_inds']  # Used to determine the datacube from an index
+    
+#     def _select_particle(self, point_idx):
+#         """Find which datacube the point index belongs to."""
+#         p_ind = bisect_right(self.particle_inds, point_idx) - 1
+#         return p_ind, point_idx - self.particle_inds[p_ind]
+
+#     def _get_neighbors(self, datacube_idx, center_idx, shape):
+#         """Sample neighbors around a given index within a specific datacube."""
+#         H, W = shape
+#         flattened_size = H * W
+#         neighbors = []
+        
+#         while len(neighbors) < self.num_neighbors:
+#             # Sample a shift from a normal distribution, apply it within the H*W flattened space
+#             shift = int(np.random.normal(0, self.gaussian_std))
+#             neighbor_idx = center_idx + shift
+
+#             # Ensure the neighbor index is within the bounds of the flattened image (H*W)
+#             if 0 <= neighbor_idx < flattened_size and neighbor_idx not in neighbors:
+#                 neighbors.append(neighbor_idx)
+
+#         return neighbors
+
+#     def __iter__(self):
+#         """Return a batch of indices for each iteration."""
+#         self.batches = 0
+#         while self.batches < len(self)-1: # drop last
+#             batch = []
+
+#             while len(batch) < self.batch_size:
+#                 # Sample a random index in the global (flattened) space
+#                 random_idx = np.random.randint(0, len(self.dset))
+
+#                 # Determine which datacube this index belongs to
+#                 p_ind, x_y_flatind = self._select_particle(random_idx)
+
+#                 # Get the shape of the selected datacube
+#                 selected_shape = self.dataset_shapes[p_ind]
+
+#                 # Get neighbors around the selected point in the H*W flattened image
+#                 neighbors = self._get_neighbors(p_ind, x_y_flatind, selected_shape)
+
+#                 # For each point, we will generate a tuple (datacube_idx, point_in_datacube)
+#                 # to later index the correct datacube
+#                 batch.append((p_ind, x_y_flatind))
+#                 batch.extend([(p_ind, neighbor) for neighbor in neighbors])
+
+#                 if len(batch) >= self.batch_size: break
+
+#             self.batches += 1
+#             # Yield a batch with size `batch_size`
+#             yield [self.particle_inds[b[0]] + b[1] for b in batch[:self.batch_size]]
+
+#     def __len__(self):
+#         """Return the number of batches per epoch."""
+#         # This can be adjusted based on the desired number of iterations per epoch
+#         return len(self.dset) // self.batch_size
+
+# without replacement
+class EELS_Gaussian_Sampler(Sampler):
+    def __init__(self, dset, batch_size, gaussian_std=5, num_neighbors=10):
         """
         Custom Gaussian Sampler for stacked EELS dataset with multiple datacubes of different sizes.
 
@@ -1033,72 +1012,54 @@ class StackedEELSSampler(Sampler):
             gaussian_std (int): Standard deviation for Gaussian sampling around the first sampled point.
             num_neighbors (int): Number of additional points to sample around the first point.
         """
-        self.dataset_shapes = dataset_shapes
+        self.dset = dset
+        self.particle_inds = dset.meta['particle_inds']
+        self.shapes = dset.meta['shape_list']
         self.batch_size = batch_size
         self.gaussian_std = gaussian_std
         self.num_neighbors = num_neighbors
-        
-        # Compute the flattened sizes (H*W) for the image dimensions of each datacube
-        self.flattened_lengths = [shape[0] * shape[1] for shape in dataset_shapes]  # H * W for each datacube
-        self.total_length = sum(self.flattened_lengths)
-        self.cumulative_lengths = np.cumsum(self.flattened_lengths)  # Used to determine the datacube from an index
-    
-    def _select_datacube(self, point_idx):
-        """Find which datacube the point index belongs to."""
-        for i, cum_length in enumerate(self.cumulative_lengths):
-            if point_idx < cum_length:
-                if i == 0:
-                    return i, point_idx  # datacube index and index within datacube
-                else:
-                    return i, point_idx - self.cumulative_lengths[i - 1]
-        raise IndexError("Point index out of range")
-
-    def _get_neighbors(self, datacube_idx, center_idx, shape):
-        """Sample neighbors around a given index within a specific datacube."""
-        H, W, _, _ = shape
-        flattened_size = H * W
-        neighbors = []
-        
-        while len(neighbors) < self.num_neighbors:
-            # Sample a shift from a normal distribution, apply it within the H*W flattened space
-            shift = int(np.random.normal(0, self.gaussian_std))
-            neighbor_idx = center_idx + shift
-
-            # Ensure the neighbor index is within the bounds of the flattened image (H*W)
-            if 0 <= neighbor_idx < flattened_size and neighbor_idx not in neighbors:
-                neighbors.append(neighbor_idx)
-
-        return neighbors
 
     def __iter__(self):
         """Return a batch of indices for each iteration."""
-        batch = []
+        self.batches = 0
+        while self.batches < len(self)-1: # drop last
+            batch = []
 
-        while len(batch) < self.batch_size:
-            # Sample a random index in the global (flattened) space
-            random_idx = np.random.randint(0, self.total_length)
+            while len(batch) < self.batch_size:
+                ind = torch.randint(0, len(self.dset),(1,)).item()
+                #which particle?
+                p = bisect_right(self.particle_inds, ind) - 1
+                p_ind = self.particle_inds[p]
+                shp = self.shapes[p][:2]
+                
+                x, y = (ind - p_ind) % shp[1], int((ind - p_ind) / shp[0])  # find x,y coords
 
-            # Determine which datacube this index belongs to
-            datacube_idx, point_in_datacube = self._select_datacube(random_idx)
+                neighbors = set()
+                # Get neighbors around the selected point in the H*W flattened image
+                while len(neighbors) < self.num_neighbors:
+                    # Sample a shift from a normal distribution, apply it within the H*W flattened space
+                    x_ = int(torch.randn(1).item() * self.gaussian_std)
+                    y_ = int(torch.randn(1).item() * self.gaussian_std)
+                    new_x, new_y = x + x_, y + y_
+                    if not (0 <= new_x < shp[0] and 0 <= new_y < shp[1]):
+                        continue  # skip if the new coordinates are out of bounds
+                    if (new_x, new_y) in neighbors:
+                        continue  # skip if the new coordinates are already in neighbors
+                    neighbors.add((new_x, new_y))
 
-            # Get the shape of the selected datacube
-            selected_shape = self.dataset_shapes[datacube_idx]
-
-            # Get neighbors around the selected point in the H*W flattened image
-            neighbors = self._get_neighbors(datacube_idx, point_in_datacube, selected_shape)
-
-            # For each point, we will generate a tuple (datacube_idx, point_in_datacube)
-            # to later index the correct datacube
-            batch.append((datacube_idx, point_in_datacube))
-            batch.extend([(datacube_idx, neighbor) for neighbor in neighbors])
-
-            if len(batch) >= self.batch_size:
-                break
-
-        # Yield a batch with size `batch_size`
-        yield batch[:self.batch_size]
+                batch += [coord[1]*shp[0] + coord[0] + p_ind for coord in neighbors]
+                if len(batch) >= self.batch_size: break
+            self.batches += 1
+            
+            yield batch
 
     def __len__(self):
         """Return the number of batches per epoch."""
         # This can be adjusted based on the desired number of iterations per epoch
-        return self.total_length // self.batch_size
+        return len(self.dset) // self.batch_size
+
+
+def custom_collate_fn(batch): 
+    # batch = [tuple(map(torch.tensor, elem)) for elem in batch[0]]
+    # idx,data = zip(*batch)
+    return torch.tensor(batch[0][0]), torch.tensor(batch[0][1])

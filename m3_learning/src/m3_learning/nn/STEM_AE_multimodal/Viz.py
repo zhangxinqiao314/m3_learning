@@ -1041,6 +1041,7 @@ class Viz_EELS_hv():
                         bounds=(0,0)+self.dset.meta['shape_list'][p]
                         ).opts(width=350, height=300, 
                                cmap='viridis', colorbar=True, 
+                               clim=(fits.min(), fits.max()),
                                tools=['tap'], 
                                axiswise=True, shared_axes=False, 
                                title=f'Fitted at {self.xticks[e][int(x)][1]:.1f} eV')    
@@ -1051,6 +1052,7 @@ class Viz_EELS_hv():
                         bounds=(0,0)+self.dset.meta['shape_list'][p]
                         ).opts(width=350, height=300, 
                                cmap='viridis', colorbar=True, 
+                               clim=(fits.min(), fits.max()),
                                tools=['tap'], 
                                axiswise=True, shared_axes=False, 
                                title=f'Fitted at {self.xticks[e][int(x)][1]:.1f} eV, Channel {c}, coef1: {self.coef1_scale[c]:.2e}')
@@ -1083,7 +1085,8 @@ class Viz_EELS_hv():
                         ).opts(axiswise=True, shared_axes=False, 
                                xlabel='Loss (eV)', ylabel='Intensity',
                                xticks=self.xticks[e][::240],
-                               color='red', line_width=1.5)
+                               color='red', line_width=1.5,
+                               )
         return fits
     # @profile
     def emb_fits(self,p,e,c,x=0,y=0):
@@ -1140,9 +1143,12 @@ class Viz_EELS_hv():
         if par==0 or par==3: mean_par = emb[:,:,par].sum(1)
         else: mean_par = emb[:,:,par].mean(1)
         idx = np.ravel_multi_index((int(x), int(y)),self.dset.meta['shape_list'][p])
-        return hv.Image(mean_par.reshape(self.dset.meta['shape_list'][p]), bounds=(0,0)+self.dset.meta['shape_list'][p]
-                        ).opts(colorbar=True,clim=(mean_par.min(),mean_par.max()),
-                            axiswise=True, shared_axes=False, title=f'{self.parameter_labels[par]}: {mean_par[idx]:.3e}' ) 
+        return hv.Image(mean_par.reshape(self.dset.meta['shape_list'][p]), 
+                        bounds=(0,0)+self.dset.meta['shape_list'][p]
+                        ).opts(colorbar=True,
+                               clim=(mean_par.min(),mean_par.max()),
+                               axiswise=True, shared_axes=False, 
+                               title=f'{self.parameter_labels[par]}: {mean_par[idx]:.3e}' ) 
     # @profile                      
     def emb_parameters(self,p,e,c,x,y,par,**kwargs):
         idx = np.ravel_multi_index((int(x), int(y)),self.dset.meta['shape_list'][p])
@@ -1150,7 +1156,8 @@ class Viz_EELS_hv():
         emb = emb[:,par]
         return hv.Image(emb.reshape(self.dset.meta['shape_list'][p]), 
                         bounds=(0,0)+self.dset.meta['shape_list'][p]
-                        ).opts(colorbar=True,clim=(emb.min(),emb.max()),
+                        ).opts(colorbar=True,
+                               clim=(emb.min(),emb.max()),
                                axiswise=True, shared_axes=False, 
                                title=f'{self.parameter_labels[par]}: {emb[idx]:.3e}' ) 
    
