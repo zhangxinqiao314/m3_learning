@@ -1107,18 +1107,18 @@ class Viz_EELS_hv():
         Re,Im = self.Re_e_Im_e_(p,e,c,x,y)
         eps_1 = Re/(Re**2+Im**2)
         eps_2 = Im/(Re**2+Im**2)
+        
         epsilon_1 = hv.Curve(eps_1
                 ).opts(axiswise=True, shared_axes=False, 
                         xlabel='Loss (eV)', ylabel='Intensity',
                         xticks=self.xticks[e][::240],
-                        color='black', line_dash='solid',
-                         
+                        color='orange', line_dash='solid',                         
                         title=f'Dielectric Response ({int(x)},{int(y)})')
         epsilon_2 = hv.Curve(eps_2
                 ).opts(axiswise=True, shared_axes=False, 
                         xlabel='Loss (eV)', ylabel='Intensity',
                         xticks=self.xticks[e][::240],
-                        color='orange', line_dash='solid',
+                        color='black', line_dash='solid',
                         
                         )
         Re = hv.Curve(Re

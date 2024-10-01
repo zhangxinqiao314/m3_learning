@@ -1010,7 +1010,7 @@ class EELS_Gaussian_Sampler(Sampler):
             dataset_shapes (list of tuples): List of shapes of each datacube in the dataset, e.g., [(128, 128, 2, 969), (140, 140, 2, 969), ...].
             batch_size (int): Number of total points per minibatch.
             gaussian_std (int): Standard deviation for Gaussian sampling around the first sampled point.
-            num_neighbors (int): Number of additional points to sample around the first point.
+            num_neighbors (int): Number of additional points to sample around the first point. ( best if batch_size % num_neighbors == 0)
         """
         self.dset = dset
         self.particle_inds = dset.meta['particle_inds']
@@ -1019,6 +1019,12 @@ class EELS_Gaussian_Sampler(Sampler):
         self.gaussian_std = gaussian_std
         self.num_neighbors = num_neighbors
 
+    def _which_particle_shape(self, ind):
+        p = bisect_right(self.particle_inds, ind) - 1
+        p_ind = self.particle_inds[p]
+        shp = self.shapes[p][:2]
+        return p_ind,shp
+        
     def __iter__(self):
         """Return a batch of indices for each iteration."""
         self.batches = 0
@@ -1027,13 +1033,11 @@ class EELS_Gaussian_Sampler(Sampler):
 
             while len(batch) < self.batch_size:
                 ind = torch.randint(0, len(self.dset),(1,)).item()
-                #which particle?
-                p = bisect_right(self.particle_inds, ind) - 1
-                p_ind = self.particle_inds[p]
-                shp = self.shapes[p][:2]
-                
-                x, y = (ind - p_ind) % shp[1], int((ind - p_ind) / shp[0])  # find x,y coords
+                batch.append(ind)
 
+                p_ind,shp = self._which_particle_shape(ind)
+                x, y = (ind - p_ind) % shp[1], int((ind - p_ind) / shp[0])  # find x,y coords
+                
                 neighbors = set()
                 # Get neighbors around the selected point in the H*W flattened image
                 while len(neighbors) < self.num_neighbors:
@@ -1051,7 +1055,7 @@ class EELS_Gaussian_Sampler(Sampler):
                 if len(batch) >= self.batch_size: break
             self.batches += 1
             
-            yield batch
+            yield batch[:self.batch_size]
 
     def __len__(self):
         """Return the number of batches per epoch."""

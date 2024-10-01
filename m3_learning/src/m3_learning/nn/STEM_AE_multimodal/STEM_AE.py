@@ -1271,6 +1271,8 @@ class FitterAutoencoder_1D():
               best_train_loss=None,
               save_emb_every=None,
               minibatch_logging_rate=None,
+              binning=False,
+              weight_by_distance=False,
               wandb_init={}):
         """Function that trains the model
         
@@ -1335,9 +1337,17 @@ class FitterAutoencoder_1D():
                 fill_embeddings = self.get_embedding(data, train=True)
 
 
-            loss_dict = self.loss_function(
-                self.DataLoader_, coef_1, coef_2, coef_3, coef_4, coef_5,ln_parm,
-                fill_embeddings=fill_embeddings, minibatch_logging_rate=minibatch_logging_rate)
+            loss_dict = self.loss_function( self.DataLoader_,
+                                            coef1=coef_1,
+                                            coef2=coef_2,
+                                            coef3=coef_3,
+                                            coef4=coef_4,
+                                            coef5=coef_5,
+                                            ln_parm=ln_parm,
+                                            fill_embeddings=fill_embeddings,
+                                            minibatch_logging_rate=minibatch_logging_rate,
+                                            binning=binning,
+                                            weight_by_distance=weight_by_distance, )
             # divide by batches inplace
             loss_dict.update( (k,v/len(self.DataLoader_)) for k,v in loss_dict.items())
             
@@ -1387,6 +1397,7 @@ class FitterAutoencoder_1D():
         }
         torch.save(checkpoint, self.checkpoint)
 
+    # TODO: calculate norms on max intensity
     def loss_function(self,
                       train_iterator,
                       coef1=0,
@@ -1397,7 +1408,9 @@ class FitterAutoencoder_1D():
                       ln_parm=1,
                       beta=None,
                       fill_embeddings=False,
-                      minibatch_logging_rate=None):
+                      minibatch_logging_rate=None,
+                      binning=False,
+                      weight_by_distance=False):
         """computes the loss function for the training
 
         Args:
@@ -1440,6 +1453,26 @@ class FitterAutoencoder_1D():
 
             if beta is None: embedding, predicted_x = self.Fitter(x)
             else: embedding, sd, mn, predicted_x = self.Fitter(x)
+            
+            # TODO: bin x and predicted_x based on data retrived from the dataloader
+            # TODO: weight by euclidean distance to 1st point in the bin
+            # i, idx, x are lists. Each list is the gaussian samples from a batch
+            if binning:
+                x = list(torch.split(x, self.dataloader_sampler.num_neighbors)) # Split the batch into groups based on the number of neighbors
+                predicted_x = list(torch.split(predicted_x, self.dataloader_sampler.num_neighbors))
+                
+                if weight_by_distance:
+                    idx = torch.split(idx, self.dataloader_sampler.num_neighbors) # Split the indices into groups based on the number of neighbors
+                    for i_, sample_group in enumerate(idx):
+                        p_ind, shp = self.dataloader_sampler._which_particle_shape(sample_group[0]) # Determine the particle index and shape for the current sample group
+                        coords = [((ind - p_ind) % shp[1], int((ind - p_ind) / shp[0])) for ind in sample_group] # Calculate the coordinates relative to the first point in the group
+                        weights = torch.tensor([1]+[1 / (1 + ((coords[0][0] - coord[0]) ** 2 + (coords[0][1] - coord[1]) ** 2) ** 0.5) for coord in coords[1:]], # Calculate weights based on the Euclidean distance to the first point
+                                                device = self.device) 
+                        x[i_] = x[i_]*weights.unsqueeze(-1).unsqueeze(-1)
+                        predicted_x[i_] = predicted_x[i_]*weights.unsqueeze(-1).unsqueeze(-1)
+                        
+                x = torch.stack([x_.sum(dim=0) for x_ in x]) # Sum the tensors in each group and stack them into a new batch
+                predicted_x = torch.stack([x_.sum(dim=0) for x_ in predicted_x])
 
             if coef1 > 0: 
                 reg_loss_1 = weighted_ln_(embedding[:,:,0])
@@ -1468,12 +1501,8 @@ class FitterAutoencoder_1D():
                 
             else: l2_loss = 0
             
-            # reconstruction loss TODO: try getting rid of this
-            mask = (x!=0) # only compare with non0 eels. Otherwise, too noisy and biased
             loss = F.mse_loss(x, predicted_x, reduction='mean');
-            loss = (loss*mask.float()).sum()
-            loss /= mask.sum()
-
+            
             loss_dict['mse_loss'] += loss.item()
             
             loss = loss + reg_loss_1 + contras_loss - maxi_loss + l2_loss
@@ -1528,7 +1557,6 @@ class FitterAutoencoder_1D():
             print(error)
             print('Generated not opened')
 
-        
     def load_loss_data(self, path_checkpoint):
         """loads the weights from a checkpoint
 
