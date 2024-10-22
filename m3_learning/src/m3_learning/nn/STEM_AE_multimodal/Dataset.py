@@ -842,7 +842,7 @@ class EELS_Embedding_Dataset():
         plt.plot(fits[e].sum(axis=0),linewidth=1)
         plt.show()
 
-    def get_active_channels(self,thresh=0.1):
+    def get_active_channels(self,thresh=0.1,ch=0):
         '''fraction of the max. threshold for "active" channels
         fraction of the max of channel. threshold for sparse channels
         '''
@@ -850,6 +850,7 @@ class EELS_Embedding_Dataset():
             emb = h[f'embedding_{self.model.check}']
             data = da.from_array( emb[...,0])
             indices = da.argwhere(data.mean((0,1)) > thresh)
+            # indices = da.argwhere(data > thresh)
             return indices.compute().flatten()
 
     def open_h5(self):
@@ -1013,7 +1014,7 @@ class EELS_Gaussian_Sampler(Sampler):
             num_neighbors (int): Number of additional points to sample around the first point. ( best if batch_size % num_neighbors == 0)
         """
         self.dset = dset
-        self.particle_inds = dset.meta['particle_inds']
+        self.particle_inds = dset.meta['particle_inds'] 
         self.shapes = dset.meta['shape_list']
         self.batch_size = batch_size
         self.gaussian_std = gaussian_std

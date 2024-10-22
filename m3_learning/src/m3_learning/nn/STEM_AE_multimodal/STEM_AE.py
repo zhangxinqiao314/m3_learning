@@ -1429,8 +1429,8 @@ class FitterAutoencoder_1D():
 
         # loss of the epoch
         loss_dict = {'weighted_ln_loss': 0,
-                     'contras_loss': 0,
-                     'maxi_loss': 0,
+                    #  'contras_loss': 0,
+                    #  'maxi_loss': 0,
                      'mse_loss': 0,
                      'train_loss': 0,
                      'sparse_max_loss': 0,
@@ -1471,8 +1471,8 @@ class FitterAutoencoder_1D():
                         x[i_] = x[i_]*weights.unsqueeze(-1).unsqueeze(-1)
                         predicted_x[i_] = predicted_x[i_]*weights.unsqueeze(-1).unsqueeze(-1)
                         
-                x = torch.stack([x_.sum(dim=0) for x_ in x]) # Sum the tensors in each group and stack them into a new batch
-                predicted_x = torch.stack([x_.sum(dim=0) for x_ in predicted_x])
+                x = torch.stack([x_.mean(dim=0) for x_ in x]) # Sum the tensors in each group and stack them into a new batch
+                predicted_x = torch.stack([x_.mean(dim=0) for x_ in predicted_x])
 
             if coef1 > 0: 
                 reg_loss_1 = weighted_ln_(embedding[:,:,0])
