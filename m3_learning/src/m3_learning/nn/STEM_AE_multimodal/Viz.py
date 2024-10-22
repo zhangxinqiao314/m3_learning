@@ -911,7 +911,7 @@ class Viz_Multimodal:
 
         return interactive_layout
 
-
+from holoviews.operation.datashader import rasterize
 class Viz_EELS_hv():
     def __init__(self,dset,model,embedding,channel_type='all',active_threshold=0.1):
         '''
@@ -922,12 +922,13 @@ class Viz_EELS_hv():
         self.dset = dset
         self.model = model
         self.embedding = embedding
+        self.active_threshold = active_threshold
         
         self.particle_dict = {k:v for v,k in enumerate(dset.meta['particle_list'])}
         self.parameter_labels = [ 'Area under curve', 'Mean position', 'FWHM', 'Lorentzian Character', 'Gaussian Character', 'Power Law Character']
 
         self.channels = {'all': list(range(model.num_fits)),
-                         'non-zeros': list(embedding.get_active_channels(active_threshold))}
+                         'non-zeros': list(embedding.get_active_channels(self.active_threshold))}
          
         # Define Sliders
         self.p_select = pn.widgets.Select(name='Particle', options=self.particle_dict)  # Replace with actual options
@@ -1306,8 +1307,22 @@ class Viz_EELS_hv():
             
             hv.Layout( [self.parameter_dmaps(par) *self.blank_img *self.dot_overlay \
                 for par in list(range(self.model.num_params))] ).cols(4) )
+        
+        # parameter_dmaps_by_channel = ( 
+        #     pn.Row(self.p_select, self.e_select, self.c_select) +\
+        # combined_layout = (        
+        #     (input_dmap + emb_dmap + input_specs_dmap) +\
+            
+        #     hv.Layout( [self.parameter_dmaps(par) *self.blank_img *self.dot_overlay \
+        #         for par in list(range(self.model.num_params))] ).cols(4) )
 
         return parameter_dmaps_by_channel
+     
+        #  # Add the Panel selectors as a separate row using pn.Row
+        # panel_controls = pn.Row(self.p_select, self.e_select, self.c_select)
+
+        # # Return the combined layout with selectors as a Panel Column
+        # return pn.Column(panel_controls, combined_layout)
      
     def visualize_dielectric(self):
         input_dmap = (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True)

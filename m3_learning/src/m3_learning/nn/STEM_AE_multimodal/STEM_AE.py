@@ -1136,7 +1136,7 @@ class FitterAutoencoder_1D():
                  gen_h5= './generated_1D.h5',
                  folder='./save_folder',
                  wandb_project = None,
-                 dataloader_sampler=RandomSampler,
+                 dataloader_sampler=None,
                  custom_collate_fn=None,
                  sampler_kwargs={}):
         """_summary_
@@ -1175,7 +1175,8 @@ class FitterAutoencoder_1D():
         self.limits = limits
         self.loops_scaler = loops_scaler
         self.learning_rate = learning_rate
-        self.dataloader_sampler = dataloader_sampler(**sampler_kwargs)
+        try: self.dataloader_sampler = dataloader_sampler(**sampler_kwargs)
+        except: pass
         self.custom_collate=custom_collate_fn
 
         self._checkpoint = None
@@ -1255,7 +1256,6 @@ class FitterAutoencoder_1D():
 
     ## TODO: implement embedding calculation/unshuffler
     def Train(self,
-              data,
               max_learning_rate=1e-4,
               coef_1=0, 
               coef_2=0,
@@ -1331,10 +1331,10 @@ class FitterAutoencoder_1D():
         # training loop
         for epoch in range(self.start_epoch, N_EPOCHS):
             fill_embeddings = False
-            if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
-                print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
-                print('.............................')
-                fill_embeddings = self.get_embedding(data, train=True)
+            # if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
+            #     print(f'Epoch: {epoch:03d}/{N_EPOCHS:03d}, getting embedding')
+            #     print('.............................')
+            #     fill_embeddings = self.get_embedding(data, train=True)
 
 
             loss_dict = self.loss_function( self.DataLoader_,

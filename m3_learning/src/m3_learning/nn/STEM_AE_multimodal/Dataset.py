@@ -806,7 +806,11 @@ class EELS_Embedding_Dataset():
         self.h5_name = f'{self.model.folder}/{self.model.emb_h5}'
         self.embs = None
         self.fits =  None
-        self.shape = ((self.__len__(),)+self[0][0].shape)
+        # self.shape = None
+        
+    @property
+    def shape(self):
+        return ((self.__len__(),)+self[0][0].shape)
 
 
     def discrete_dielectric_function(self,i=0,e=0,c=1,extend_tail=1,):
@@ -848,8 +852,8 @@ class EELS_Embedding_Dataset():
         '''
         with self.open_h5() as h:
             emb = h[f'embedding_{self.model.check}']
-            data = da.from_array( emb[...,0])
-            indices = da.argwhere(data.mean((0,1)) > thresh)
+            data = da.from_array( emb[:,ch,:,0])
+            indices = da.argwhere(data.mean((0,)) > thresh)
             # indices = da.argwhere(data > thresh)
             return indices.compute().flatten()
 
