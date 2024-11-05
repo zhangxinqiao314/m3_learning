@@ -1,6 +1,7 @@
 from cProfile import label
 from turtle import color
 from urllib import response
+from m3_learning.be import dataset
 from m3_learning.util.file_IO import make_folder
 from m3_learning.viz.layout import layout_fig
 import numpy as np
@@ -912,6 +913,13 @@ class Viz_Multimodal:
         return interactive_layout
 
 from holoviews.operation.datashader import rasterize
+import holoviews as hv
+import datashader as ds
+import datashader.transfer_functions as tf
+from holoviews.operation.datashader import shade, datashade, rasterize
+from holoviews.streams import Tap
+hv.extension('bokeh')  # or 'matplotlib' if you prefer
+
 class Viz_EELS_hv():
     def __init__(self,dset,model,embedding,channel_type='all',active_threshold=0.1):
         '''
@@ -934,23 +942,24 @@ class Viz_EELS_hv():
         self.p_select = pn.widgets.Select(name='Particle', options=self.particle_dict)  # Replace with actual options
         self.e_select = pn.widgets.Select(name='EELS Channel', options=[k for k in range(dset.eels_chs)])  # Replace with actual options
         self.c_select = pn.widgets.DiscreteSlider(name='Emb Channel', value=self.channels[channel_type][0], options=self.channels[channel_type])  # Replace with actual options
+        self.s_select = pn.widgets.DiscreteSlider(name='Spectral Value', options=[s for s in range(dset.spec_len)])  # Replace with actual options
         
         # Define Stream tools
         # multiply to image you wanna tap on
         self.max_ =  max([s[0] for s in self.dset.meta['shape_list']])
         self.blank_img = hv.Image( np.zeros((self.max_,self.max_))
                                 ).opts(tools=['tap'], axiswise=True, shared_axes=False)
-        self.blank_spec = hv.Curve( np.zeros(dset.spec_len)
-                                ).opts(tools=['tap'], axiswise=True, shared_axes=False)
+        # self.blank_spec = hv.Curve( np.zeros(dset.spec_len)
+        #                         ).opts(tools=['tap'], axiswise=True, shared_axes=False)
         
         # use as input on dynamic maps
         self.point_stream = Tap( source=self.blank_img, x=0, y=0 )
-        self.spectrum_stream = Tap(source=self.blank_spec, x=0) 
+        # self.spectrum_stream = Tap(source=self.blank_spec, x=0) 
         
         # multiply to dynamic maps you wanna display on
         self.dot_overlay = hv.DynamicMap(pn.bind(self._show_dot, p=self.p_select), streams=[self.point_stream]
                                     ).opts(axiswise=True, shared_axes=False)
-        self.vline_overlay = hv.DynamicMap(self._show_vline, streams=[self.spectrum_stream]
+        self.vline_overlay = hv.DynamicMap(pn.bind(self._show_vline, x=self.s_select),
                                             ).opts(xlim=(0, self.dset.spec_len), ylim=(0, 1),
                                                     axiswise=True, shared_axes=False)
             
@@ -959,32 +968,33 @@ class Viz_EELS_hv():
                                                         dset.meta['eels_axis_labels'][0]) ],
                         [(i, np.round(label,2)) for i, label in zip(np.arange(dset.spec_len), 
                                                         dset.meta['eels_axis_labels'][1]) ] ]
-        
+        self.x_labels = [ {i:v for i,v in enumerate(dset.meta['eels_axis_labels'][0])}, 
+                          {i:v for i,v in enumerate(dset.meta['eels_axis_labels'][0])} ]
         self.p_cache = {}
         self.e_cache = {}
     
-    # @profile  
+    @profile  
     def _show_dot(self, p, x, y): return hv.Scatter([(int(x), int(y))]).opts(xlim=(0, self.dset.meta['shape_list'][p][0]), 
                                                 ylim=(0, self.dset.meta['shape_list'][p][1]), 
                                                 color='red', size=5, marker='o',
                                                 axiswise=True, shared_axes=False)
-    # @profile
-    def _show_vline(self, x,y): return hv.VLine(int(x)).opts(xlim=(0, self.dset.spec_len), ylim=(0, 1), 
+    @profile
+    def _show_vline(self, x): return hv.VLine(int(x)).opts(xlim=(0, self.dset.spec_len), ylim=(0, 1), 
                                         color='black', line_width=2,
                                         axiswise=True, shared_axes=False)
 
    # update data and manage cached particles ################ 
-    # @profile  
+    @profile  
     def _data(self, p): 
         if p in self.p_cache: return self.p_cache[p]
         else:
             _, eels = self.dset[self.dset.meta['particle_inds'][p]:self.dset.meta['particle_inds'][p+1]]
             self.p_cache[p] = eels
             return eels
-    # @profile  
+    @profile  
     def data(self, p, e, **kwargs): 
         return self._data(p)[:,e]
-    # @profile 
+    @profile 
     def _emb(self, p): 
         if p in self.e_cache: return self.e_cache[p]
         else:
@@ -992,12 +1002,12 @@ class Viz_EELS_hv():
             self.e_cache[p] = emb
             return emb
         # (14400,2,96,6), (14400,2,96,969) 
-    # @profile     
+    @profile     
     def emb(self, p, e, **kwargs): 
         emb,fits =  self._emb(p)
         return emb[:,e], fits[:,e] 
         # (14400,96,6), (14400,96,969) 
-    # @profile         
+    @profile         
     def emb_channel(self,p,e,c,**kwargs):
         emb,fits = self._emb(p)
         return emb[:,e,c], fits[:,e,c]
@@ -1021,21 +1031,21 @@ class Viz_EELS_hv():
     
          
     # Image objects #########################################
-    # @profile  
+    @profile  
     def mean_image(self,p,e, **kwargs): 
         return hv.Image(self.dset.get_mean_image(p,e), bounds=((0,0,)+self.dset.meta['shape_list'][p])
                         ).opts(width=350, height=300, 
                                cmap='viridis', colorbar=True,
                                axiswise=True, shared_axes=False,
                                title = f"Mean image {self.dset.meta['particle_list'][p]}")            
-    # @profile 
+    @profile 
     def input_image(self,p,e, x, **kwargs): 
         return hv.Image( self.data(p,e)[:, int(x)].reshape(self.dset.meta['shape_list'][p]),
                         bounds=((0,0,self.max_,self.max_))
                         ).opts(axiswise=True, shared_axes=False,
                                title = f"Input at {self.xticks[e][int(x)][1]:.1f} eV" 
                                )
-    # @profile 
+    @profile 
     def mean_emb_image(self,p,e,x=0,**kwargs):
         _,fits = self.emb(p,e) # (14400,96,969)
         return hv.Image(fits[:,:,int(x)].sum(1).reshape(self.dset.meta['shape_list'][p]), 
@@ -1046,7 +1056,7 @@ class Viz_EELS_hv():
                                tools=['tap'], 
                                axiswise=True, shared_axes=False, 
                                title=f'Fitted at {self.xticks[e][int(x)][1]:.1f} eV')    
-    # @profile
+    @profile
     def emb_particles(self,p,e,c,x=0,**kwargs):
         _,fits = self.emb_channel(p,e,c) # (14400,96,969)
         return hv.Image(fits[:,int(x)].reshape(self.dset.meta['shape_list'][p]), 
@@ -1060,7 +1070,7 @@ class Viz_EELS_hv():
      
     
     # Spectrum objects ######################################
-    # @profile          
+    @profile          
     def mean_spectrum(self,p,e, **kwargs):
         mean_spectrum = self.data(p,e).mean(axis=0)
         return hv.Curve(mean_spectrum
@@ -1070,7 +1080,7 @@ class Viz_EELS_hv():
                                xlabel='Loss (eV)', ylabel='Intensity',
                                xticks=self.xticks[e][::240],
                                title='Mean Spectrum')
-    # @profile     
+    @profile     
     def input_spectrum(self,p,e, x, y, **kwargs): 
         return hv.Curve( self.data(p,e).reshape(self.dset.meta['shape_list'][p]+(-1,))[int(x), int(y), :]
                         ).opts(axiswise=True, shared_axes=False, 
@@ -1078,7 +1088,7 @@ class Viz_EELS_hv():
                                xticks=self.xticks[e][::240],
                                color='blue', line_width=1,
                                title = f"Spec at: ({int(x)},{int(y)})" )
-    # @profile 
+    @profile 
     def mean_emb_fits(self,p,e,x=0,y=0):
         _,fits = self.emb(p,e) # (14400,96,969)
         idx = np.ravel_multi_index((int(x),int(y)),(self.dset.meta['shape_list'][p]))
@@ -1089,7 +1099,7 @@ class Viz_EELS_hv():
                                color='red', line_width=1.5,
                                )
         return fits
-    # @profile
+    @profile
     def emb_fits(self,p,e,c,x=0,y=0):
         idx = np.ravel_multi_index((int(x),int(y)),(self.dset.meta['shape_list'][p]))
         _,fits = self.emb_channel(p,e,c) # (14400,96,969) 
@@ -1138,7 +1148,7 @@ class Viz_EELS_hv():
         return epsilon_1*epsilon_2 + Re*Im
 
     # Parameter objects #####################################
-    # @profile 
+    @profile 
     def mean_emb_parameters(self,p,e,x,y,par,**kwargs):
         emb,_ = self.emb(p,e) # (14400,96,969)
         if par==0 or par==3: mean_par = emb[:,:,par].sum(1)
@@ -1150,7 +1160,7 @@ class Viz_EELS_hv():
                                clim=(mean_par.min(),mean_par.max()),
                                axiswise=True, shared_axes=False, 
                                title=f'{self.parameter_labels[par]}: {mean_par[idx]:.3e}' ) 
-    # @profile                      
+    @profile                      
     def emb_parameters(self,p,e,c,x,y,par,**kwargs):
         idx = np.ravel_multi_index((int(x), int(y)),self.dset.meta['shape_list'][p])
         emb,_ = self.emb_channel(p,e,c) # (14400,969)
@@ -1164,48 +1174,46 @@ class Viz_EELS_hv():
    
     
     # Image dmaps ###########################################
-    # @profile          
+    @profile          
     def mean_input_image_dmap(self):
         return hv.DynamicMap(pn.bind(self.mean_image, p=self.p_select, e=self.e_select)
                                 ).opts(width=350, height=300, cmap='viridis', colorbar=True, 
                                         axiswise=True, shared_axes=False)
-    # @profile 
+    @profile 
     def input_image_dmap(self):
-        return hv.DynamicMap(pn.bind(self.input_image, p=self.p_select, e=self.e_select), 
-                             streams=[self.spectrum_stream]
+        return hv.DynamicMap(pn.bind(self.input_image, p=self.p_select, e=self.e_select, x=self.s_select),
                             ).opts(width=350, height=300, 
                                    cmap='viridis', colorbar=True,
                                    axiswise=True, shared_axes=False)
-    # @profile 
+    @profile 
     def mean_emb_dmap(self):
         return hv.DynamicMap(pn.bind(self.mean_emb_image, p=self.p_select, e=self.e_select), 
                                  streams=[self.spectrum_stream]
                                 ).opts(width=350, height=300, cmap='viridis', colorbar=True,
                                         axiswise=True, shared_axes=False, tools=['tap'])
-    # @profile
+    @profile
     def emb_dmap(self): 
         return hv.DynamicMap(pn.bind(self.emb_particles, 
-                                     p=self.p_select, e=self.e_select, c=self.c_select), 
-                                streams=[self.spectrum_stream]
+                                     p=self.p_select, e=self.e_select, c=self.c_select, x=self.s_select), 
                             ).opts(width=350, height=300, cmap='viridis', colorbar=True, colorbar_opts={'width': 10},
                                     axiswise=True, shared_axes=False, tools=['tap'])
      
     
     # Spectrum dmaps ########################################
-    # @profile      
+    @profile      
     def mean_input_spectrum_dmap(self):
         return hv.DynamicMap(pn.bind(self.mean_spectrum, p=self.p_select, e=self.e_select)
                                 ).opts(
                                        width=350, height=300,
                                        axiswise=True, shared_axes=False)    
-    # @profile 
+    @profile 
     def input_spectrum_dmap(self):
         return hv.DynamicMap(pn.bind(self.input_spectrum, p=self.p_select, e=self.e_select), 
                              streams=[self.point_stream]
                             ).opts(
                                    width=350, height=300, 
                                    axiswise=True, shared_axes=False)
-    # @profile 
+    @profile 
     def mean_fits_dmap(self):
         return hv.DynamicMap(pn.bind(self.mean_emb_fits, p=self.p_select, e=self.e_select), 
                              streams=[self.point_stream]
@@ -1213,7 +1221,7 @@ class Viz_EELS_hv():
                                    width=350, height=300, 
                                    axiswise=True, shared_axes=False, 
                                    tools=['tap'])     
-    # @profile
+    @profile
     def fits_dmap(self):
         return hv.DynamicMap(pn.bind(self.emb_fits, 
                                      p=self.p_select, e=self.e_select, c=self.c_select), 
@@ -1235,14 +1243,14 @@ class Viz_EELS_hv():
     
     
     # Parameter dmaps #######################################
-    # @profile 
+    @profile 
     def mean_parameter_dmap(self,par):
         return hv.DynamicMap( pn.bind(self.mean_emb_parameters, p=self.p_select, e=self.e_select, par=par), 
                                     streams=[self.point_stream]
                                     ).opts(width=250, height=225, 
                                            cmap='viridis', colorbar_opts={'width': 5},
                                            axiswise=True, shared_axes=False )
-    # @profile
+    @profile
     def parameter_dmaps(self, par):
         return hv.DynamicMap( pn.bind(self.emb_parameters, 
                                     p=self.p_select, e=self.e_select, c=self.c_select, par=par), 
@@ -1254,11 +1262,11 @@ class Viz_EELS_hv():
     
     
     # Servables #############################################
-    # @profile          
+    @profile          
     def visualize_input_mean(self):
         return pn.Column( pn.Row(self.p_select, self.e_select,),
                 self.mean_input_image_dmap() + self.mean_input_spectrum_dmap()).servable()
-    # @profile         
+    @profile         
     def visualize_input_at(self):
         processed_panel = pn.Column( 
             pn.Row(self.p_select, self.e_select,),
@@ -1270,10 +1278,29 @@ class Viz_EELS_hv():
                 (self.input_spectrum_dmap() *self.blank_spec *self.vline_overlay ).opts(axiswise=True) ) )
         return processed_panel
     # @profile
+    # def visualize_embedding_mean(self,view_channels='active'): 
+    #     '''
+    #     {'active', 'sparse'}
+    #     '''        
+    #     input_dmap = (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True)
+    #     emb_dmap = (self.mean_emb_dmap() *self.blank_img *self.dot_overlay).opts(axiswise=True)
+    #     specs_dmap = (self.input_spectrum_dmap()*self.mean_fits_dmap() *self.blank_spec *self.vline_overlay).opts(axiswise=True)
+        
+    #     mean_parameters_panel = pn.Column(
+    #         pn.Row(self.p_select, self.e_select),
+            
+    #         (input_dmap + emb_dmap + specs_dmap),
+            
+    #         hv.Layout( [self.mean_parameter_dmap(par)*self.blank_img *self.dot_overlay \
+    #             for par in list(range(self.model.num_params))] ).cols(4) 
+    #         )
+
+    #     return mean_parameters_panel  
+    @profile
     def visualize_embedding_mean(self,view_channels='active'): 
         '''
         {'active', 'sparse'}
-        '''        
+        '''
         input_dmap = (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True)
         emb_dmap = (self.mean_emb_dmap() *self.blank_img *self.dot_overlay).opts(axiswise=True)
         specs_dmap = (self.input_spectrum_dmap()*self.mean_fits_dmap() *self.blank_spec *self.vline_overlay).opts(axiswise=True)
@@ -1288,20 +1315,22 @@ class Viz_EELS_hv():
             )
 
         return mean_parameters_panel  
-    # @profile                                             
+    @profile                                             
     def visualize_embedding(self,view_channels='active'):
+    # visualize_embedding took 0.0571 seconds
         '''
         {'active', 'sparse'}
         '''
         input_dmap = (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True)
         emb_dmap = (self.emb_dmap() *self.blank_img *self.dot_overlay).opts(axiswise=True)
-        input_specs_dmap = (self.input_spectrum_dmap()*self.mean_fits_dmap()*self.fits_dmap() *self.blank_spec *self.vline_overlay).opts(framewise=True,axiswise=True)
+        input_specs_dmap = (self.input_spectrum_dmap()*self.mean_fits_dmap()*self.fits_dmap() *self.vline_overlay).opts(framewise=True,axiswise=True)
         # input_specs_dmap = (self.input_spectrum_dmap()*self.blank_spec *self.vline_overlay).opts(axiswise=True)
         # input_specs_dmap = (self.mean_fits_dmap() *self.blank_spec *self.vline_overlay).opts(axiswise=True)
         # input_specs_dmap = (self.fits_dmap() *self.blank_spec *self.vline_overlay).opts(axiswise=True)
 
         parameter_dmaps_by_channel = pn.Column( 
-            pn.Row(self.p_select, self.e_select, self.c_select),
+            pn.Row(self.p_select, self.e_select, self.s_select),
+            pn.Row(self.c_select),
                 
             (input_dmap + emb_dmap + input_specs_dmap),
             
@@ -1324,6 +1353,7 @@ class Viz_EELS_hv():
         # # Return the combined layout with selectors as a Panel Column
         # return pn.Column(panel_controls, combined_layout)
      
+     
     def visualize_dielectric(self):
         input_dmap = (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True)
         emb_dmap = (self.emb_dmap() *self.blank_img *self.dot_overlay).opts(axiswise=True)
@@ -1341,7 +1371,89 @@ class Viz_EELS_hv():
             dielectric_dmaps
         )
         return dielectric_dmaps_by_channel
+  
+
+# class Viz_Gaussian_Sampler_hv():
+#     def __init__(self, dset, sampler):
+#         self.dset = dset
+#         self.sampler = sampler
+#         self._batch_inds = next(iter(self.sampler))
         
+#         self.colors = ['green','orange','yellow','brown','pink','gray', 'white', 'magenta', 'cyan','purple']
+        
+#         # self.cache = {}
+        
+#     @property
+#     def batch_inds(self): return next(iter(self.sampler))
+
+#     def _retrieve_batch(self,dset):
+#         return [dset[ind] for ind in self._batch_inds]
+
+#    # update data and manage cached particles ################ 
+#     # @profile  
+#     def _data(self, p): 
+#         if p in self.p_cache: return self.p_cache[p]
+#         else:
+#             _, eels = self.dset[self.dset.meta['particle_inds'][p]:self.dset.meta['particle_inds'][p+1]]
+#             self.p_cache[p] = eels
+#             return eels
+#     # @profile  
+#     def data(self, p, e, **kwargs): 
+#         return self._data(p)[:,e]
+    
+    
+#     def plot_batch(self,i,noise,trigger=False):
+#         dset = self.data()
+#         clumps = self.sampler.split_list(self.batch_inds)
+#         p_inds,shps = zip(([self.sampler._which_particle_shape(inds[0]) for inds in clumps]))
+#         pts = [ [(int(ind / shps[i][0]), ind % shps[i][0]) for ind in clump] for i, clump in enumerate(clumps) ]
+#         scatter_list = []
+#         for p,pt in enumerate(pts):
+#             scatter_list.append( hv.Scatter(pt).opts( color=colors[p], size=3, marker='o',
+#                                                     axiswise=True, shared_axes=False))
+#         return hv.Overlay(scatter_list).opts(shared_axes=True, axiswise=True)
+    
+#     def plot_mean_spectrum(i,noise,trigger=False):
+#         dset = select_datacube(i,noise)
+#         clumps = split_list(dset,trigger)
+#         data = [ np.array([dset[int(ind / x_), ind % x_] for ind in clump]) for clump in clumps ]
+#         curves_list = []
+#         for d,dat in enumerate(data):
+#             curves_list.append(hv.Curve(dat.mean(axis=0)).opts(width=350, height=300,
+#                                                             color=colors[d],
+#                                             ylim=(0, dset.max()), xlim=(0, 500),
+#                                             axiswise=True, shared_axes=False, 
+#                                             line_width=1, line_dash='dashed'))
+#         return hv.Overlay(curves_list).opts(shared_axes=True, axiswise=True)
+    
+    
+#     class ButtonStream(streams.Stream):
+#         button = param.Boolean(default=False)
+
+#     button_stream = ButtonStream()
+
+#     def trigger_button(event):
+#         button_stream.button = not button_stream.button
+
+#     button = pn.widgets.Button(name='Trigger', button_type='primary')
+#     button.on_click(trigger_button)
+
+#     pn.Row(button)
+
+#     batch_inds_dmap = hv.DynamicMap(pn.bind(plot_batch, i=i_slider, noise=noise_selector, trigger=button_stream.param.button))
+#     batch_spec_dmap = hv.DynamicMap(pn.bind(plot_mean_spectrum, i=i_slider, noise=noise_selector, trigger=button_stream.param.button) )
+#     # Layout with widgets and plots
+#     dmap = pn.Column(pn.Row(button),
+#         pn.Row(i_slider, s_slider, noise_selector),
+#         pn.Row(x_slider, y_slider, sampler_selector),
+#         (img_dmap*dot_dmap*batch_inds_dmap + 
+#             spec_dmap*batch_spec_dmap*vline_dmap).opts(shared_axes=True,axiswise=True)
+#     )
+
+#     dmap
+
+      
+      
 def imshow_tensor(x):
     import matplotlib.pyplot as plt
     plt.imshow(x.detach().cpu().numpy());

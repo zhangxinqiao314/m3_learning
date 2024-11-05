@@ -1005,7 +1005,7 @@ from torch.utils.data import Sampler
 #         # This can be adjusted based on the desired number of iterations per epoch
 #         return len(self.dset) // self.batch_size
 
-# without replacement
+# with replacement TODO: fix to match the one in fake pv viz nb
 class EELS_Gaussian_Sampler(Sampler):
     def __init__(self, dset, batch_size, gaussian_std=5, num_neighbors=10):
         """
@@ -1024,6 +1024,13 @@ class EELS_Gaussian_Sampler(Sampler):
         self.gaussian_std = gaussian_std
         self.num_neighbors = num_neighbors
 
+    def _split_list(self, batch):
+        split_batches = []
+        for i in range(0, len(batch)-1, self.num_neighbors):
+            split_batches.append(batch[i:i+self.num_neighbors])
+        split_batches.append(batch[i+self.num_neighbors:])
+        return split_batches
+
     def _which_particle_shape(self, ind):
         p = bisect_right(self.particle_inds, ind) - 1
         p_ind = self.particle_inds[p]
@@ -1038,12 +1045,12 @@ class EELS_Gaussian_Sampler(Sampler):
 
             while len(batch) < self.batch_size:
                 ind = torch.randint(0, len(self.dset),(1,)).item()
-                batch.append(ind)
 
                 p_ind,shp = self._which_particle_shape(ind)
-                x, y = (ind - p_ind) % shp[1], int((ind - p_ind) / shp[0])  # find x,y coords
+                x, y = int((ind - p_ind) % shp[1]), int((ind - p_ind) / shp[0])  # find x,y coords
                 
                 neighbors = set()
+                neighbors.add((x,y))
                 # Get neighbors around the selected point in the H*W flattened image
                 while len(neighbors) < self.num_neighbors:
                     # Sample a shift from a normal distribution, apply it within the H*W flattened space

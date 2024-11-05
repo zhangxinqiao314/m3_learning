@@ -1176,7 +1176,7 @@ class FitterAutoencoder_1D():
         self.loops_scaler = loops_scaler
         self.learning_rate = learning_rate
         try: self.dataloader_sampler = dataloader_sampler(**sampler_kwargs)
-        except: pass
+        except: self.dataloader_sampler = None
         self.custom_collate=custom_collate_fn
 
         self._checkpoint = None
@@ -1269,6 +1269,7 @@ class FitterAutoencoder_1D():
               epoch_=None,
               batch_size=32,
               best_train_loss=None,
+              save_model_every=1,
               save_emb_every=None,
               minibatch_logging_rate=None,
               binning=False,
@@ -1302,7 +1303,10 @@ class FitterAutoencoder_1D():
         torch.manual_seed(seed)
 
         # builds the dataloader
-        self.DataLoader_ = DataLoader(self.dset, sampler=self.dataloader_sampler, collate_fn=self.custom_collate)
+        if self.dataloader_sampler is None: 
+            self.DataLoader_ = DataLoader(self.dset, batch_size=batch_size, shuffle=True)
+        else:
+            self.DataLoader_ = DataLoader(self.dset, sampler=self.dataloader_sampler, collate_fn=self.custom_collate)
 
         # option to use the learning rate scheduler
         if with_scheduler:
@@ -1360,13 +1364,14 @@ class FitterAutoencoder_1D():
             self.checkpoint = self.folder + f'/{save_date}_' +\
                 f'epoch:{epoch:04d}_l1coef:{coef_1:.4f}'+'_lr:'+lr_ +\
                 f'_trainloss:{loss_dict["train_loss"]:.4f}.pkl'
-            self.save_checkpoint(epoch,
-                                loss_dict=loss_dict,
-                                coef_1=coef_1, 
-                                coef_2=coef_2,
-                                coef_3=coef_3,
-                                coef_4=coef_4,
-                                ln_parm=ln_parm)
+            if epoch % save_model_every == 0:
+                self.save_checkpoint(epoch,
+                                    loss_dict=loss_dict,
+                                    coef_1=coef_1, 
+                                    coef_2=coef_2,
+                                    coef_3=coef_3,
+                                    coef_4=coef_4,
+                                    ln_parm=ln_parm)
 
             if save_emb_every is not None and epoch % save_emb_every == 0: # tell loss function to give embedding
                 h = self.embedding.file
@@ -1446,7 +1451,7 @@ class FitterAutoencoder_1D():
         for i,(idx,x) in enumerate(tqdm(train_iterator, leave=True, total=len(train_iterator))):
             # tic = time.time()
             idx = idx.to(self.device).squeeze()
-            x = x.to(self.device, dtype=torch.float).squeeze()
+            x = x.to(self.device, dtype=torch.float)
 
             # update the gradients to zero
             self.optimizer.zero_grad()
@@ -1454,7 +1459,6 @@ class FitterAutoencoder_1D():
             if beta is None: embedding, predicted_x = self.Fitter(x)
             else: embedding, sd, mn, predicted_x = self.Fitter(x)
             
-            # TODO: bin x and predicted_x based on data retrived from the dataloader
             # TODO: weight by euclidean distance to 1st point in the bin
             # i, idx, x are lists. Each list is the gaussian samples from a batch
             if binning:
@@ -1463,16 +1467,22 @@ class FitterAutoencoder_1D():
                 
                 if weight_by_distance:
                     idx = torch.split(idx, self.dataloader_sampler.num_neighbors) # Split the indices into groups based on the number of neighbors
+                    weight_list = []
                     for i_, sample_group in enumerate(idx):
                         p_ind, shp = self.dataloader_sampler._which_particle_shape(sample_group[0]) # Determine the particle index and shape for the current sample group
-                        coords = [((ind - p_ind) % shp[1], int((ind - p_ind) / shp[0])) for ind in sample_group] # Calculate the coordinates relative to the first point in the group
-                        weights = torch.tensor([1]+[1 / (1 + ((coords[0][0] - coord[0]) ** 2 + (coords[0][1] - coord[1]) ** 2) ** 0.5) for coord in coords[1:]], # Calculate weights based on the Euclidean distance to the first point
+                        coords = [(int((ind - p_ind) % shp[1]), int((ind - p_ind) / shp[0])) for ind in sample_group] # Calculate the coordinates relative to the first point in the group
+                        weights = torch.tensor([1]+[1 / (1 + ((coords[0][0]-coord[0])**2 + (coords[0][1]-coord[1])**2)**0.5) for coord in coords[1:]], # Calculate weights based on the Euclidean distance to the first point
                                                 device = self.device) 
                         x[i_] = x[i_]*weights.unsqueeze(-1).unsqueeze(-1)
-                        predicted_x[i_] = predicted_x[i_]*weights.unsqueeze(-1).unsqueeze(-1)
-                        
-                x = torch.stack([x_.mean(dim=0) for x_ in x]) # Sum the tensors in each group and stack them into a new batch
-                predicted_x = torch.stack([x_.mean(dim=0) for x_ in predicted_x])
+                        predicted_x[i_] = predicted_x[i_]*weights.unsqueeze(-1).unsqueeze(-1)  
+                        weight_list.append(weights)
+                    weight_sums = torch.stack([weight_.sum(dim=0) for weight_ in weight_list]).unsqueeze(-1).unsqueeze(-1) # Sum the weights in each group and stack them into a new batch
+                    x = torch.stack([x_.sum(dim=0) for x_ in x])/weight_sums # Sum the tensors in each group and stack them into a new batch
+                    predicted_x = torch.stack([x_.sum(dim=0) for x_ in predicted_x])/weight_sums
+                else:        
+                    x = torch.stack([x_.mean(dim=0) for x_ in x]) # Sum the tensors in each group and stack them into a new batch
+                    predicted_x = torch.stack([x_.mean(dim=0) for x_ in predicted_x])
+                    # print('')
 
             if coef1 > 0: 
                 reg_loss_1 = weighted_ln_(embedding[:,:,0])
