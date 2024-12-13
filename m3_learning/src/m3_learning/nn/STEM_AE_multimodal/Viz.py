@@ -1187,8 +1187,7 @@ class Viz_EELS_hv():
                                    axiswise=True, shared_axes=False)
     @profile 
     def mean_emb_dmap(self):
-        return hv.DynamicMap(pn.bind(self.mean_emb_image, p=self.p_select, e=self.e_select), 
-                                 streams=[self.spectrum_stream]
+        return hv.DynamicMap(pn.bind(self.mean_emb_image, p=self.p_select, e=self.e_select, x=self.s_select), 
                                 ).opts(width=350, height=300, cmap='viridis', colorbar=True,
                                         axiswise=True, shared_axes=False, tools=['tap'])
     @profile
@@ -1269,14 +1268,15 @@ class Viz_EELS_hv():
     @profile         
     def visualize_input_at(self):
         processed_panel = pn.Column( 
-            pn.Row(self.p_select, self.e_select,),
+            pn.Row(self.p_select, self.e_select,self.s_select),
             
             ( (self.mean_input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True) + \
-                (self.mean_input_spectrum_dmap() *self.blank_spec *self.vline_overlay ).opts(axiswise=True) ),
+                (self.mean_input_spectrum_dmap() *self.vline_overlay ).opts(axiswise=True) ),
             
             ( (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True) + \
-                (self.input_spectrum_dmap() *self.blank_spec *self.vline_overlay ).opts(axiswise=True) ) )
+                (self.input_spectrum_dmap() *self.vline_overlay ).opts(axiswise=True) ) )
         return processed_panel
+    
     # @profile
     # def visualize_embedding_mean(self,view_channels='active'): 
     #     '''
@@ -1296,6 +1296,7 @@ class Viz_EELS_hv():
     #         )
 
     #     return mean_parameters_panel  
+    
     @profile
     def visualize_embedding_mean(self,view_channels='active'): 
         '''
@@ -1303,7 +1304,7 @@ class Viz_EELS_hv():
         '''
         input_dmap = (self.input_image_dmap() *self.blank_img *self.dot_overlay ).opts(axiswise=True)
         emb_dmap = (self.mean_emb_dmap() *self.blank_img *self.dot_overlay).opts(axiswise=True)
-        specs_dmap = (self.input_spectrum_dmap()*self.mean_fits_dmap() *self.blank_spec *self.vline_overlay).opts(axiswise=True)
+        specs_dmap = (self.input_spectrum_dmap()*self.mean_fits_dmap() *self.vline_overlay).opts(axiswise=True)
         
         mean_parameters_panel = pn.Column(
             pn.Row(self.p_select, self.e_select),
@@ -1314,7 +1315,8 @@ class Viz_EELS_hv():
                 for par in list(range(self.model.num_params))] ).cols(4) 
             )
 
-        return mean_parameters_panel  
+        return mean_parameters_panel
+    
     @profile                                             
     def visualize_embedding(self,view_channels='active'):
     # visualize_embedding took 0.0571 seconds

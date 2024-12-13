@@ -1448,7 +1448,7 @@ class FitterAutoencoder_1D():
                                         channels=self.num_fits, 
                                         coef=coef4).to(self.device)
         
-        for i,(idx,x) in enumerate(tqdm(train_iterator, leave=True, total=len(train_iterator))):
+        for i,(idx,x) in enumerate( tqdm( train_iterator, leave=True, total=len(train_iterator) ) ):
             # tic = time.time()
             idx = idx.to(self.device).squeeze()
             x = x.to(self.device, dtype=torch.float)
